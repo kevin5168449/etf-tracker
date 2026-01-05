@@ -1,6 +1,41 @@
+name: Daily ETF Update
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 每天 UTC 09:00 (台灣時間 17:00) 執行
+  workflow_dispatch:      # 允許手動按按鈕測試
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 給予寫入權限才能更新 CSV
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          # 檢查是否有 requirements.txt，如果沒有就直接安裝
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas requests openpyxl; fi
+
       - name: Run ETL Script
         env:
-          # 只留這個就好
+          # 這裡抓取 Discord Webhook
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python etl.py
 
+      - name: Commit and Push
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          # 檢查是否有變動，有才上傳
+          git add data/*.csv
+          git commit -m "Auto-update data" || echo "No changes to commit"
+          git push
