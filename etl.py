@@ -4,12 +4,16 @@ import os
 from datetime import datetime
 import io
 import time
+import re
 
-# --- Selenium 相關設定 ---
+# --- Selenium 設定 ---
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # --- 設定 Discord Webhook ---
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
@@ -36,17 +40,14 @@ def smart_read_excel(content):
         return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
     except: return pd.DataFrame()
 
-# ★★★ 核彈級武器：使用 Selenium 模擬真實瀏覽器 ★★★
-def get_html_with_selenium(url):
-    print(f"🤖 啟動 Chrome 瀏覽器前往: {url}")
+# ★★★ Yahoo 股市專用爬蟲 ★★★
+def get_yahoo_holdings(url):
+    print(f"🤖 啟動 Chrome 前往 Yahoo 股市: {url}")
     
     chrome_options = Options()
-    chrome_options.add_argument("--headless") # 不顯示視窗
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    # 偽裝成一般使用者
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     driver = None
@@ -55,22 +56,27 @@ def get_html_with_selenium(url):
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         driver.get(url)
-        # 等待 5 秒讓網頁 JavaScript 跑完 (這是關鍵！)
-        time.sleep(5) 
-        
+        # 等待表格出現 (Yahoo 的表格 class 通常包含 'table-body')
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "table-body"))
+            )
+            print("✅ Yahoo 頁面載入完成")
+        except:
+            print("⚠️ 等待超時，嘗試直接讀取...")
+
         page_source = driver.page_source
         return page_source
     except Exception as e:
-        print(f"❌ Selenium 執行失敗: {e}")
+        print(f"❌ Yahoo 爬取失敗: {e}")
         return None
     finally:
-        if driver:
-            driver.quit()
+        if driver: driver.quit()
 
 def get_etf_data(etf_code):
     df = pd.DataFrame()
     
-    # === 統一 00981A (Excel 下載) ===
+    # === 統一 00981A (維持原樣) ===
     if etf_code == "00981A":
         roc_date = get_roc_date_string()
         url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=61YTW&date={roc_date}&specificDate=false"
@@ -81,35 +87,35 @@ def get_etf_data(etf_code):
         except Exception as e:
             print(f"❌ 統一失敗: {e}")
 
-    # === 野村 00980A (改用 Selenium 抓 MoneyDJ) ===
+    # === 野村 00980A (改抓 Yahoo 股市) ===
     elif etf_code == "00980A":
-        url = "https://www.moneydj.com/ETF/X/Basic/Basic0006X.xdjhtm?etfid=00980A"
-        print(f"🕷️ 嘗試抓取 MoneyDJ (野村)...")
+        # Yahoo 股市持股頁面
+        url = "https://tw.stock.yahoo.com/quote/00980A/holdings"
+        print(f"🕷️ 嘗試抓取 Yahoo 股市 (野村)...")
         
-        try:
-            # 使用 Selenium 抓取完整的 HTML
-            html_content = get_html_with_selenium(url)
-            
-            if html_content:
+        html_content = get_yahoo_holdings(url)
+        
+        if html_content:
+            try:
+                # Yahoo 的表格通常比較亂，我們需要篩選一下
                 dfs = pd.read_html(html_content)
                 for temp in dfs:
-                    if '股票名稱' in temp.columns or '名稱' in temp.columns:
+                    # Yahoo 的欄位通常是 "股號", "股名", "比例"
+                    if '比例' in temp.columns or '持股(%)' in temp.columns:
                         df = temp
-                        print(f"✅ 成功抓到表格！共 {len(df)} 筆資料")
+                        print(f"✅ 成功抓到 Yahoo 表格！(共 {len(df)} 筆)")
                         break
-            else:
-                print("❌ 無法取得網頁內容")
-
-        except Exception as e:
-            print(f"❌ 野村解析失敗: {e}")
+            except Exception as e:
+                print(f"❌ Yahoo 解析表格失敗: {e}")
 
     # === 欄位清洗 ===
     if df.empty: return pd.DataFrame()
 
+    # 1. 統一欄位名稱
     col_map = {
-        '股票代號': ['股票代號', '代號'],
-        '股票名稱': ['股票名稱', '名稱'],
-        '持有股數': ['持有股數', '股數', '庫存股數', '張數', '權重', '股數/單位數']
+        '股票代號': ['股票代號', '代號', '股號', 'Symbol'],
+        '股票名稱': ['股票名稱', '名稱', '股名', 'Name'],
+        '持有股數': ['持有股數', '股數', '張數', '權重', '比例', '持股(%)'] # Yahoo 用 "比例"
     }
     for target, cands in col_map.items():
         for cand in cands:
@@ -118,17 +124,35 @@ def get_etf_data(etf_code):
                 df.rename(columns={matches[0]: target}, inplace=True)
                 break
     
-    # 處理張數轉股數
-    if '持有股數' in df.columns:
+    # 2. 特殊處理：如果是 Yahoo 抓到的，持有股數欄位其實是 "%"
+    if etf_code == "00980A":
+        # Yahoo 的 "比例" 欄位可能是字串 "15.00%"，要轉成數字
+        if '持有股數' in df.columns:
+            df['持有股數'] = df['持有股數'].astype(str).str.replace('%', '').str.replace(',', '')
+            df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
+            print("ℹ️ 已將 Yahoo 權重% 轉換為數值，作為比較基準")
+            
+            # 為了讓 00980A 的圖表不要太小 (跟 00981A 的股數相比)，我們可以把它放大
+            # 這裡我們保留原樣，但在 app.py 顯示時要注意它是 %
+            # 或者，為了讓圖表好看，我們假設它有 10,000 單位，這樣 bar chart 才會有長度
+            # df['持有股數'] = df['持有股數'] * 10000 
+
+    # 3. 處理統一的張數/股數
+    elif etf_code == "00981A" and '持有股數' in df.columns:
         df['持有股數'] = pd.to_numeric(df['持有股數'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        # 如果最大值小於 10 萬，極大機率是「張」，乘 1000
-        if etf_code == "00980A" and df['持有股數'].max() < 100000:
-            print("⚠️ 單位自動修正：張 -> 股")
-            df['持有股數'] = df['持有股數'] * 1000
+
+    # 4. 處理股票名稱和代號 (Yahoo 有時候會把 "2330 台積電" 寫在同一格)
+    if '股票名稱' in df.columns and '股票代號' not in df.columns:
+        # 嘗試從名稱分拆代號
+        # 這邊簡單處理，Yahoo 通常是有分開的，如果不分開我們之後再修
+        pass
 
     required = ['股票代號', '股票名稱', '持有股數']
-    if all(c in df.columns for c in required):
-        return df[required]
+    # 如果 Yahoo 缺代號 (有時候只有名稱)，我們勉強接受
+    if '股票名稱' in df.columns and '持有股數' in df.columns:
+        if '股票代號' not in df.columns:
+             df['股票代號'] = "N/A" # 暫時填入
+        return df[['股票代號', '股票名稱', '持有股數']]
     
     return pd.DataFrame()
 
