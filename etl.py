@@ -44,18 +44,28 @@ def get_etf_data(etf_code):
             print(f"❌ 統一失敗: {e}")
 
     # === 野村 00980A (改抓 MoneyDJ) ===
+        # === 野村 00980A (MoneyDJ 加強版) ===
     elif etf_code == "00980A":
-        # MoneyDJ 持股頁面 (這是公開的財經網站，不會擋爬蟲)
-        url = "https://www.moneydj.com/ETF/X/Basic/Basic0006X.xdjhtm?etfid=00980A" 
+        url = "https://www.moneydj.com/ETF/X/Basic/Basic0006X.xdjhtm?etfid=00980A"
         print(f"🕷️ 爬取 MoneyDJ (野村): {url}")
         try:
-            # 這裡需要 lxml，會自動抓網頁表格
-            dfs = pd.read_html(url, encoding='utf-8')
-            # 尋找包含 "股票名稱" 的表格
+            # ★★★ 加強偽裝：讓網站以為我們是真人 ★★★
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Referer": "https://www.moneydj.com/"
+            }
+            # 先用 requests 抓下來，再餵給 pandas
+            res = requests.get(url, headers=headers)
+            res.encoding = 'utf-8' # 強制編碼
+            
+            dfs = pd.read_html(io.StringIO(res.text))
+            
             for temp in dfs:
-                if '股票名稱' in temp.columns:
+                # MoneyDJ 有時候欄位叫 "名稱", 有時候叫 "股票名稱"
+                if '股票名稱' in temp.columns or '名稱' in temp.columns:
                     df = temp
-                    print(f"✅ 成功在 MoneyDJ 找到表格！")
+                    print(f"✅ 成功在 MoneyDJ 找到表格！(列數: {len(df)})")
                     break
         except Exception as e:
             print(f"❌ 野村(MoneyDJ)失敗: {e}")
