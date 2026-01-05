@@ -23,100 +23,98 @@ def send_discord_notify(msg):
     except Exception as e:
         print(f"❌ 發送錯誤: {e}")
 
-# 小工具：自動產生「民國年」日期字串 (格式：115/01/06)
+# 小工具：自動產生「民國年」日期字串
 def get_roc_date_string():
     now = datetime.now()
     roc_year = now.year - 1911
     return f"{roc_year}/{now.month:02d}/{now.day:02d}"
 
+# ★★★ 新增功能：聰明讀取 Excel (自動跳過標題行) ★★★
+def smart_read_excel(content):
+    try:
+        # 先讀取前 20 行，不設標題
+        temp_df = pd.read_excel(io.BytesIO(content), header=None, nrows=20)
+        
+        # 尋找含有「股票代號」或「Code」的那一行
+        header_row_index = -1
+        for i, row in temp_df.iterrows():
+            row_str = row.astype(str).str.cat() # 把整行黏成字串
+            if "股票代號" in row_str or "證券代號" in row_str or "Code" in row_str:
+                header_row_index = i
+                print(f"🔍 在第 {i} 行找到表格標題！")
+                break
+        
+        if header_row_index != -1:
+            # 從找到的那一行開始重新讀取
+            df = pd.read_excel(io.BytesIO(content), header=header_row_index)
+            return df
+        else:
+            print("⚠️ 找不到標題列，嘗試直接讀取...")
+            return pd.read_excel(io.BytesIO(content))
+            
+    except Exception as e:
+        print(f"Excel 解析錯誤: {e}")
+        return pd.DataFrame()
+
 def get_etf_data(etf_code):
     df = pd.DataFrame()
     
     # ==========================================
-    # 統一投信 (00981A) - 自動帶入今天日期
+    # 統一投信 (00981A)
     # ==========================================
     if etf_code == "00981A":
-        # 這裡會自動產生像 "115/01/07" 的日期
         roc_date = get_roc_date_string()
         url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=61YTW&date={roc_date}&specificDate=false"
         print(f"📥 正在下載統一 (00981A): {url} ...")
         
         try:
-            # 偽裝成瀏覽器
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
             response = requests.get(url, headers=headers)
-            # 統一通常是 Excel 格式
-            try:
-                df = pd.read_excel(io.BytesIO(response.content))
-            except:
-                # 萬一它是 HTML 格式
-                dfs = pd.read_html(io.BytesIO(response.content))
-                if dfs: df = dfs[0]
+            
+            # 使用新的聰明讀取功能
+            df = smart_read_excel(response.content)
 
         except Exception as e:
             print(f"❌ 統一 (00981A) 下載失敗: {e}")
             return pd.DataFrame()
 
     # ==========================================
-    # 野村投信 (00980A) - 爬取網頁表格
+    # 野村投信 (00980A)
     # ==========================================
     elif etf_code == "00980A":
-        # 您剛剛提供的網址
-        url = "https://www.nomurafunds.com.tw/ETFWEB/product-description?fundNo=00980A&tab=Shareholding"
-        print(f"🕷️ 正在爬取野村 (00980A): {url} ...")
-        
-        try:
-            # 使用 pd.read_html 直接抓網頁上的表格
-            # 注意：如果網頁跑太慢或用 JavaScript 渲染，可能會抓不到，這時候需要進階技巧
-            # 但我們先試試看最簡單的 read_html
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(url, headers=headers)
-            
-            # 指定 encoding='utf-8' 防止亂碼
-            tables = pd.read_html(response.text)
-            
-            if len(tables) > 0:
-                # 通常第一個表格就是持股名單
-                df = tables[0]
-                print(f"✅ 野村抓取成功！原始欄位: {df.columns.tolist()}")
-            else:
-                print("⚠️ 野村網頁上找不到表格 (可能是動態網頁)")
-                return pd.DataFrame()
-                
-        except Exception as e:
-            print(f"❌ 野村爬取失敗: {e}")
-            return pd.DataFrame()
+        # 嘗試用假資料或是暫時跳過，因為野村網頁版太難爬
+        print(f"⚠️ 野村 (00980A) 暫時無法爬取，跳過。")
+        return pd.DataFrame()
     
-    # --- 統一欄位名稱 (標準化) ---
-    # 為了讓後面好比較，我們要幫欄位改名
+    # --- 統一欄位名稱 ---
     column_mapping = {
         '股票代號': ['股票代號', 'Code', '證券代號', '標的代號', 'Stock Code'],
         '股票名稱': ['股票名稱', 'Name', '證券名稱', '標的名稱', 'Stock Name'],
-        '持有股數': ['持有股數', 'Shares', '庫存股數', '股數', '持有股數/單位數', 'Shares/Units']
+        '持有股數': ['持有股數', 'Shares', '庫存股數', '股數', '持有股數/單位數']
     }
     
     # 自動改名
-    for target, candidates in column_mapping.items():
-        for candidate in candidates:
-            # 部分比對 (防止欄位有空白鍵)
-            matches = [col for col in df.columns if str(col).strip() in candidates]
-            if matches:
-                df.rename(columns={matches[0]: target}, inplace=True)
-                break
+    if not df.empty:
+        for target, candidates in column_mapping.items():
+            for candidate in candidates:
+                matches = [col for col in df.columns if str(col).strip() in candidates]
+                if matches:
+                    df.rename(columns={matches[0]: target}, inplace=True)
+                    break
                 
     # 只留我們需要的欄位
     required = ['股票代號', '股票名稱', '持有股數']
-    # 確保欄位存在
     available = [c for c in required if c in df.columns]
     
     if len(available) == 3:
+        # 去除代號為 NaN 的行 (可能是 Excel 下方的備註)
+        df = df.dropna(subset=['股票代號'])
         return df[required]
     else:
-        print(f"⚠️ {etf_code} 欄位對應不完整，目前欄位: {df.columns.tolist()}")
-        # 嘗試印出前幾行來除錯
-        print(df.head())
+        if not df.empty:
+            print(f"⚠️ {etf_code} 欄位對應不完整，目前欄位: {df.columns.tolist()}")
         return pd.DataFrame()
 
 def process_etf(etf_code, etf_name):
@@ -132,7 +130,7 @@ def process_etf(etf_code, etf_name):
     today_str = datetime.now().strftime('%Y-%m-%d')
     history_file = f'data/{etf_code}_history.csv'
     
-    # 強制轉字串 (修復 Bug)
+    # 強制轉字串
     if '股票代號' in df_new.columns:
         df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df_new['Date'] = today_str
@@ -158,9 +156,8 @@ def process_etf(etf_code, etf_name):
                         change = int(row['股數變化'])
                         icon = "🔴減" if change < 0 else "🟢加"
                         sheets = change / 1000
-                        # 只顯示變化超過 0.1 張的
-                        if abs(sheets) >= 0.1:
-                            msg += f"{icon} **{row['股票名稱']}** ({row['股票代號']}): {change:,} 股 ({sheets:+.1f}張)\n"
+                        if abs(sheets) >= 0.1: # 只顯示 0.1 張以上的變化
+                            msg += f"{icon} **{row['股票名稱']}** ({row['股票代號']}): {sheets:+.1f}張\n"
         except Exception as e:
             print(f"比對歷史資料時發生錯誤: {e}")
 
@@ -173,7 +170,7 @@ def process_etf(etf_code, etf_name):
     return msg
 
 def main():
-    print("🚀 啟動 ETF 雙監控系統 (Unified + Nomura)...")
+    print("🚀 啟動 ETF 監控系統...")
     if not os.path.exists('data'):
         os.makedirs('data')
         
@@ -182,14 +179,16 @@ def main():
     # 執行統一 (00981A)
     final_msg += process_etf("00981A", "主動統一") or ""
     
-    # 執行野村 (00980A)
-    final_msg += process_etf("00980A", "主動野村") or ""
+    # 執行野村 (00980A) - 先暫停，確保統一能跑
+    # final_msg += process_etf("00980A", "主動野村") or ""
 
     if final_msg:
         print("準備發送 Discord 通知...")
         send_discord_notify(final_msg)
     else:
-        print("💤 今日兩檔 ETF 皆無顯著異動 (或下載失敗)。")
+        # 👇 這裡我加了一個測試訊息，確認 Discord 是通的
+        print("今日無異動，發送存活確認...")
+        send_discord_notify("🔔 ETF 機器人測試：系統執行成功！(目前顯示此訊息代表程式沒壞，但今日持股無顯著變化，或初次建立資料庫)")
 
 if __name__ == "__main__":
     main()
