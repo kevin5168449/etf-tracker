@@ -2,14 +2,14 @@ name: Daily ETF Update
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # 每天 UTC 09:00 (台灣時間 17:00) 執行
-  workflow_dispatch:      # 允許手動按按鈕測試
+    - cron: '0 9 * * *'  # 每天台灣時間 17:00 執行
+  workflow_dispatch:      # 允許手動執行
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 給予寫入權限才能更新 CSV
+      contents: write  # 重要：給予寫入權限
       
     steps:
       - name: Checkout code
@@ -22,12 +22,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # 檢查是否有 requirements.txt，如果沒有就直接安裝
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas requests openpyxl; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas requests openpyxl lxml html5lib beautifulsoup4 plotly streamlit; fi
 
       - name: Run ETL Script
         env:
-          # 這裡抓取 Discord Webhook
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python etl.py
 
@@ -35,7 +33,15 @@ jobs:
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
-          # 檢查是否有變動，有才上傳
+          
+          # 1. 先把新的資料加入暫存區
           git add data/*.csv
+          
+          # 2. 嘗試提交 (如果沒有變動就不會提交)
           git commit -m "Auto-update data" || echo "No changes to commit"
+          
+          # 3. ★★★ 關鍵修改：上傳前先拉取最新版本，並使用 rebase 避免衝突 ★★★
+          git pull --rebase
+          
+          # 4. 最後再推上去
           git push
