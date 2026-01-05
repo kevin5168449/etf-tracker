@@ -1,4 +1,6 @@
 pandas
 requests
-streamlit
 openpyxl
+lxml
+html5lib
+beautifulsoup4
