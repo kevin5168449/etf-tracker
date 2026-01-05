@@ -4,7 +4,6 @@ import os
 from datetime import datetime
 import io
 import time
-import re
 
 # --- Selenium 設定 ---
 from selenium import webdriver
@@ -28,47 +27,50 @@ def get_roc_date_string():
     now = datetime.now()
     return f"{now.year - 1911}/{now.month:02d}/{now.day:02d}"
 
-# 聰明讀取 Excel (統一專用)
+# 1. 統一專用：聰明讀取 Excel
 def smart_read_excel(content):
     try:
         temp_df = pd.read_excel(io.BytesIO(content), header=None, nrows=20)
         header_row = -1
         for i, row in temp_df.iterrows():
-            if "股票代號" in row.astype(str).str.cat() or "Code" in row.astype(str).str.cat():
+            row_str = row.astype(str).str.cat()
+            if "股票代號" in row_str or "Code" in row_str:
                 header_row = i
                 break
         return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
     except: return pd.DataFrame()
 
-# ★★★ Yahoo 股市專用爬蟲 ★★★
-def get_yahoo_holdings(url):
-    print(f"🤖 啟動 Chrome 前往 Yahoo 股市: {url}")
-    
+# 2. 復華專用：使用 Selenium 爬官網表格
+def get_fuhhwa_holdings(url):
+    print(f"🤖 啟動 Chrome 前往復華官網: {url}")
     chrome_options = Options()
-    chrome_options.add_argument("--headless") 
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # 偽裝成真人，避免被復華官網擋
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        
         driver.get(url)
-        # 等待表格出現 (Yahoo 的表格 class 通常包含 'table-body')
+        
+        # 等待網頁載入，復華官網比較慢，多給一點時間
         try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "table-body"))
+            # 等待表格出現 (尋找常見的表格標籤)
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.TAG_NAME, "table"))
             )
-            print("✅ Yahoo 頁面載入完成")
+            # 強制等待 5 秒讓 JavaScript 渲染數據
+            time.sleep(5)
+            print("✅ 復華頁面載入完成")
         except:
-            print("⚠️ 等待超時，嘗試直接讀取...")
-
-        page_source = driver.page_source
-        return page_source
+            print("⚠️ 等待超時，嘗試直接抓取...")
+            
+        return driver.page_source
     except Exception as e:
-        print(f"❌ Yahoo 爬取失敗: {e}")
+        print(f"❌ 爬蟲失敗: {e}")
         return None
     finally:
         if driver: driver.quit()
@@ -76,7 +78,7 @@ def get_yahoo_holdings(url):
 def get_etf_data(etf_code):
     df = pd.DataFrame()
     
-    # === 統一 00981A (維持原樣) ===
+    # === 統一 00981A (官方 Excel 下載) ===
     if etf_code == "00981A":
         roc_date = get_roc_date_string()
         url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=61YTW&date={roc_date}&specificDate=false"
@@ -87,86 +89,82 @@ def get_etf_data(etf_code):
         except Exception as e:
             print(f"❌ 統一失敗: {e}")
 
-    # === 野村 00980A (改抓 Yahoo 股市) ===
-    elif etf_code == "00980A":
-        # Yahoo 股市持股頁面
-        url = "https://tw.stock.yahoo.com/quote/00980A/holdings"
-        print(f"🕷️ 嘗試抓取 Yahoo 股市 (野村)...")
+    # === 復華 00991A (官網爬蟲) ===
+    elif etf_code == "00991A":
+        # 您提供的網址
+        url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold"
+        print(f"🕷️ 爬取復華官網 (00991A)...")
         
-        html_content = get_yahoo_holdings(url)
-        
-        if html_content:
+        html = get_fuhhwa_holdings(url)
+        if html:
             try:
-                # Yahoo 的表格通常比較亂，我們需要篩選一下
-                dfs = pd.read_html(html_content)
+                # 復華官網可能有多個表格，我們要找包含 "股票名稱" 或 "股數" 的那個
+                dfs = pd.read_html(html)
                 for temp in dfs:
-                    # Yahoo 的欄位通常是 "股號", "股名", "比例"
-                    if '比例' in temp.columns or '持股(%)' in temp.columns:
+                    # 檢查關鍵欄位
+                    cols = str(temp.columns)
+                    if '股票名稱' in cols or '證券名稱' in cols:
                         df = temp
-                        print(f"✅ 成功抓到 Yahoo 表格！(共 {len(df)} 筆)")
-                        break
+                        print(f"✅ 成功抓到復華持股表格！(共 {len(df)} 筆)")
+                        # 如果表格有 "股數" 欄位，這就是我們要的真愛
+                        if '股數' in cols or '持有股數' in cols:
+                            break
             except Exception as e:
-                print(f"❌ Yahoo 解析表格失敗: {e}")
+                print(f"❌ 解析失敗: {e}")
 
-    # === 欄位清洗 ===
+    # === 資料清洗與標準化 ===
     if df.empty: return pd.DataFrame()
 
     # 1. 統一欄位名稱
     col_map = {
-        '股票代號': ['股票代號', '代號', '股號', 'Symbol'],
-        '股票名稱': ['股票名稱', '名稱', '股名', 'Name'],
-        '持有股數': ['持有股數', '股數', '張數', '權重', '比例', '持股(%)'] # Yahoo 用 "比例"
+        '股票代號': ['股票代號', '代號', '股號', 'Symbol', '證券代號'],
+        '股票名稱': ['股票名稱', '名稱', '股名', 'Name', '證券名稱'],
+        '持有股數': ['持有股數', '股數', '庫存股數', '權重', '比例', '持股(%)', '持有股數(股)']
     }
     for target, cands in col_map.items():
         for cand in cands:
-            matches = [c for c in df.columns if str(c).strip() == cand]
+            # 部分比對 (防止欄位有空白鍵)
+            matches = [c for c in df.columns if str(c).strip() in cands]
             if matches:
                 df.rename(columns={matches[0]: target}, inplace=True)
                 break
     
-    # 2. 特殊處理：如果是 Yahoo 抓到的，持有股數欄位其實是 "%"
-    if etf_code == "00980A":
-        # Yahoo 的 "比例" 欄位可能是字串 "15.00%"，要轉成數字
-        if '持有股數' in df.columns:
-            df['持有股數'] = df['持有股數'].astype(str).str.replace('%', '').str.replace(',', '')
-            df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
-            print("ℹ️ 已將 Yahoo 權重% 轉換為數值，作為比較基準")
-            
-            # 為了讓 00980A 的圖表不要太小 (跟 00981A 的股數相比)，我們可以把它放大
-            # 這裡我們保留原樣，但在 app.py 顯示時要注意它是 %
-            # 或者，為了讓圖表好看，我們假設它有 10,000 單位，這樣 bar chart 才會有長度
-            # df['持有股數'] = df['持有股數'] * 10000 
-
-    # 3. 處理統一的張數/股數
-    elif etf_code == "00981A" and '持有股數' in df.columns:
-        df['持有股數'] = pd.to_numeric(df['持有股數'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-
-    # 4. 處理股票名稱和代號 (Yahoo 有時候會把 "2330 台積電" 寫在同一格)
-    if '股票名稱' in df.columns and '股票代號' not in df.columns:
-        # 嘗試從名稱分拆代號
-        # 這邊簡單處理，Yahoo 通常是有分開的，如果不分開我們之後再修
-        pass
+    # 2. 數值處理
+    if '持有股數' in df.columns:
+        # 移除 % 和 逗號
+        df['持有股數'] = df['持有股數'].astype(str).str.replace('%', '').str.replace(',', '')
+        df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
+        
+        # 復華官網通常是給 "股數" (數值很大)，如果是 Yahoo 才是 %
+        if etf_code == "00991A":
+             # 如果最大值大於 1000，代表抓到的是真實股數，這很棒！
+             if df['持有股數'].max() > 1000:
+                 print("ℹ️ 成功抓取到真實股數！")
+             else:
+                 print("ℹ️ 抓取到的是權重(%)")
 
     required = ['股票代號', '股票名稱', '持有股數']
-    # 如果 Yahoo 缺代號 (有時候只有名稱)，我們勉強接受
-    if '股票名稱' in df.columns and '持有股數' in df.columns:
-        if '股票代號' not in df.columns:
-             df['股票代號'] = "N/A" # 暫時填入
+    # 確保欄位存在
+    available = [c for c in required if c in df.columns]
+    if len(available) >= 2 and '股票名稱' in df.columns and '持有股數' in df.columns:
+        # 如果缺代號，暫時補上 N/A
+        if '股票代號' not in df.columns: df['股票代號'] = "N/A"
         return df[['股票代號', '股票名稱', '持有股數']]
     
     return pd.DataFrame()
 
 def process_etf(etf_code, etf_name):
-    print(f"--- 開始處理 {etf_name} ---")
+    print(f"\n--- 處理 {etf_name} ({etf_code}) ---")
     df_new = get_etf_data(etf_code)
     
     if df_new.empty: 
-        print(f"⚠️ {etf_name} 無數據，跳過。")
+        print(f"⚠️ 無法獲取數據，跳過。")
         return ""
     
     today_str = datetime.now().strftime('%Y-%m-%d')
     file_path = f'data/{etf_code}_history.csv'
     
+    # 強制轉字串
     if '股票代號' in df_new.columns:
         df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df_new['Date'] = today_str
@@ -179,8 +177,10 @@ def process_etf(etf_code, etf_name):
 
 def main():
     if not os.path.exists('data'): os.makedirs('data')
+    
     msg = process_etf("00981A", "主動統一")
-    msg += "\n" + process_etf("00980A", "主動野村")
+    msg += "\n" + process_etf("00991A", "主動復華未來")
+    
     print(msg)
 
 if __name__ == "__main__":
