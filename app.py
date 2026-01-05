@@ -17,7 +17,6 @@ def clean_and_deduplicate(df):
     if '持有股數' in df.columns:
         df['持有股數'] = df['持有股數'].astype(str).str.replace(',', '')
         df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
-    # 去重
     df = df.drop_duplicates(subset=['Date', '股票代號'], keep='first')
     return df
 
@@ -61,12 +60,10 @@ def show_etf_dashboard(etf_code, etf_name):
         merged['持有股數_old'] = merged['持有股數_old'].fillna(0)
         merged['股數變化'] = merged['持有股數'] - merged['持有股數_old']
         
-        # 計算佔比
-        total_shares = merged['持有股數'].sum()
-        if total_shares > 0:
-            merged['權重(%)'] = (merged['持有股數'] / total_shares * 100).round(2)
-        else:
-            merged['權重(%)'] = 0
+        # 判斷是真實股數還是百分比
+        # 00981A (統一) 通常是股數，00991A (復華) 如果抓到官網也是股數
+        is_percent = merged['持有股數'].max() < 100 
+        value_label = "權重(%)" if is_percent else "持有股數"
         
         # 計算連買
         merged = merged.sort_values('持有股數', ascending=False)
@@ -78,7 +75,7 @@ def show_etf_dashboard(etf_code, etf_name):
         col_chart, col_list = st.columns([1, 1.5])
         
         with col_chart:
-            st.subheader(f"📊 前十大持股 ({date1})")
+            st.subheader(f"📊 前十大持股 ({value_label})")
             top10 = merged.head(10).sort_values('持有股數', ascending=True)
             
             fig = px.bar(
@@ -86,21 +83,16 @@ def show_etf_dashboard(etf_code, etf_name):
                 x='持有股數', 
                 y='股票名稱', 
                 orientation='h',
-                text='權重(%)',
+                text='持有股數',
                 color='持有股數',
                 color_continuous_scale='Blues'
             )
-            fig.update_traces(texttemplate='%{text}%', textposition='outside')
-            # ★★★ 這裡拉高了圖表，並加大了字體 ★★★
-            fig.update_layout(
-                height=600, 
-                yaxis={'categoryorder':'total ascending', 'tickfont': {'size': 14}},
-                showlegend=False
-            )
+            fig.update_traces(texttemplate='%{text:.2f}' if is_percent else '%{text:,.0f}', textposition='outside')
+            fig.update_layout(height=600, yaxis={'categoryorder':'total ascending'}, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
         with col_list:
-            st.subheader(f"📋 完整持股清單 ({len(merged)} 檔)")
+            st.subheader(f"📋 完整持股清單")
             
             def highlight_change(val):
                 if val > 0: return 'color: #28a745; font-weight: bold'
@@ -116,13 +108,18 @@ def show_etf_dashboard(etf_code, etf_name):
                 merged[['股票名稱', '股票代號', '持有股數', '股數變化', '連買天數']].style
                 .map(highlight_change, subset=['股數變化'])
                 .map(highlight_streak, subset=['連買天數'])
-                .format({"持有股數": "{:,.0f}", "股數變化": "{:+,.0f}", "連買天數": "{:+d} 天"}),
+                .format({
+                    "持有股數": "{:.2f}" if is_percent else "{:,.0f}", 
+                    "股數變化": "{:+.2f}" if is_percent else "{:+,.0f}", 
+                    "連買天數": "{:+d} 天"
+                }),
                 use_container_width=True,
                 height=600,
                 hide_index=True
             )
     else:
-        st.warning(f"⚠️ {etf_code} 尚無資料，請等待爬蟲執行。")
+        st.warning(f"⚠️ {etf_code} 尚無資料，請等待 GitHub Action 執行成功。")
 
+# 顯示兩個 ETF
 show_etf_dashboard("00981A", "主動統一台股增長")
-show_etf_dashboard("00980A", "主動野村臺灣優選")
+show_etf_dashboard("00991A", "主動復華未來50")
