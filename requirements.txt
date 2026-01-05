@@ -4,5 +4,7 @@ openpyxl
 lxml
 html5lib
 beautifulsoup4
-streamlit
 plotly
+streamlit
+selenium
+webdriver-manager
