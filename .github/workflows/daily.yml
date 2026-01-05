@@ -22,7 +22,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas requests openpyxl lxml html5lib beautifulsoup4 plotly streamlit; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas requests openpyxl lxml html5lib beautifulsoup4 plotly streamlit selenium webdriver-manager; fi
+
 
       - name: Run ETL Script
         env:
