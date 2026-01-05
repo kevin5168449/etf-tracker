@@ -3,6 +3,13 @@ import requests
 import os
 from datetime import datetime
 import io
+import time
+
+# --- Selenium 相關設定 ---
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # --- 設定 Discord Webhook ---
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
@@ -29,10 +36,41 @@ def smart_read_excel(content):
         return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
     except: return pd.DataFrame()
 
+# ★★★ 核彈級武器：使用 Selenium 模擬真實瀏覽器 ★★★
+def get_html_with_selenium(url):
+    print(f"🤖 啟動 Chrome 瀏覽器前往: {url}")
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # 不顯示視窗
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    # 偽裝成一般使用者
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    driver = None
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        driver.get(url)
+        # 等待 5 秒讓網頁 JavaScript 跑完 (這是關鍵！)
+        time.sleep(5) 
+        
+        page_source = driver.page_source
+        return page_source
+    except Exception as e:
+        print(f"❌ Selenium 執行失敗: {e}")
+        return None
+    finally:
+        if driver:
+            driver.quit()
+
 def get_etf_data(etf_code):
     df = pd.DataFrame()
     
-    # === 統一 00981A (維持原樣，抓官網 Excel) ===
+    # === 統一 00981A (Excel 下載) ===
     if etf_code == "00981A":
         roc_date = get_roc_date_string()
         url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=61YTW&date={roc_date}&specificDate=false"
@@ -43,32 +81,27 @@ def get_etf_data(etf_code):
         except Exception as e:
             print(f"❌ 統一失敗: {e}")
 
-    # === 野村 00980A (改抓 MoneyDJ) ===
-        # === 野村 00980A (MoneyDJ 加強版) ===
+    # === 野村 00980A (改用 Selenium 抓 MoneyDJ) ===
     elif etf_code == "00980A":
         url = "https://www.moneydj.com/ETF/X/Basic/Basic0006X.xdjhtm?etfid=00980A"
-        print(f"🕷️ 爬取 MoneyDJ (野村): {url}")
+        print(f"🕷️ 嘗試抓取 MoneyDJ (野村)...")
+        
         try:
-            # ★★★ 加強偽裝：讓網站以為我們是真人 ★★★
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Referer": "https://www.moneydj.com/"
-            }
-            # 先用 requests 抓下來，再餵給 pandas
-            res = requests.get(url, headers=headers)
-            res.encoding = 'utf-8' # 強制編碼
+            # 使用 Selenium 抓取完整的 HTML
+            html_content = get_html_with_selenium(url)
             
-            dfs = pd.read_html(io.StringIO(res.text))
-            
-            for temp in dfs:
-                # MoneyDJ 有時候欄位叫 "名稱", 有時候叫 "股票名稱"
-                if '股票名稱' in temp.columns or '名稱' in temp.columns:
-                    df = temp
-                    print(f"✅ 成功在 MoneyDJ 找到表格！(列數: {len(df)})")
-                    break
+            if html_content:
+                dfs = pd.read_html(html_content)
+                for temp in dfs:
+                    if '股票名稱' in temp.columns or '名稱' in temp.columns:
+                        df = temp
+                        print(f"✅ 成功抓到表格！共 {len(df)} 筆資料")
+                        break
+            else:
+                print("❌ 無法取得網頁內容")
+
         except Exception as e:
-            print(f"❌ 野村(MoneyDJ)失敗: {e}")
+            print(f"❌ 野村解析失敗: {e}")
 
     # === 欄位清洗 ===
     if df.empty: return pd.DataFrame()
@@ -76,7 +109,7 @@ def get_etf_data(etf_code):
     col_map = {
         '股票代號': ['股票代號', '代號'],
         '股票名稱': ['股票名稱', '名稱'],
-        '持有股數': ['持有股數', '股數', '庫存股數', '張數', '權重']
+        '持有股數': ['持有股數', '股數', '庫存股數', '張數', '權重', '股數/單位數']
     }
     for target, cands in col_map.items():
         for cand in cands:
@@ -85,14 +118,12 @@ def get_etf_data(etf_code):
                 df.rename(columns={matches[0]: target}, inplace=True)
                 break
     
-    # 處理 MoneyDJ 可能給 "張數" 的情況
-    # 如果最大股數小於 10 萬，極有可能是「張」，自動乘 1000 轉成「股」
+    # 處理張數轉股數
     if '持有股數' in df.columns:
-        # 先把逗號拿掉轉數字
         df['持有股數'] = pd.to_numeric(df['持有股數'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        
+        # 如果最大值小於 10 萬，極大機率是「張」，乘 1000
         if etf_code == "00980A" and df['持有股數'].max() < 100000:
-            print("⚠️ 偵測到單位可能是「張」，自動轉換為「股」以便統一比較")
+            print("⚠️ 單位自動修正：張 -> 股")
             df['持有股數'] = df['持有股數'] * 1000
 
     required = ['股票代號', '股票名稱', '持有股數']
@@ -102,22 +133,20 @@ def get_etf_data(etf_code):
     return pd.DataFrame()
 
 def process_etf(etf_code, etf_name):
-    print(f"處理中: {etf_name}...")
+    print(f"--- 開始處理 {etf_name} ---")
     df_new = get_etf_data(etf_code)
     
     if df_new.empty: 
-        print(f"⚠️ {etf_name} 無法獲取數據，跳過。")
+        print(f"⚠️ {etf_name} 無數據，跳過。")
         return ""
     
     today_str = datetime.now().strftime('%Y-%m-%d')
     file_path = f'data/{etf_code}_history.csv'
     
-    # 強制代號轉字串 (修復 bug)
     if '股票代號' in df_new.columns:
         df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df_new['Date'] = today_str
     
-    # 存檔
     mode = 'a' if os.path.exists(file_path) else 'w'
     header = not os.path.exists(file_path)
     df_new.to_csv(file_path, mode=mode, header=header, index=False)
