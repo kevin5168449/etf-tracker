@@ -1,37 +1,6 @@
-name: Daily ETF Update
-
-on:
-  schedule:
-    - cron: '0 9 * * *'  # 每天 UTC 09:00 (台灣時間 17:00) 執行
-  workflow_dispatch:      # 允許手動按按鈕測試
-
-jobs:
-  run-script:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write  # 重要！給予寫入權限才能更新 CSV
-      
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
       - name: Run ETL Script
         env:
-          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          # 只留這個就好
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python etl.py
 
-      - name: Commit and Push
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          git add data/*.csv
-          git commit -m "Auto-update data" || exit 0
-          git push
