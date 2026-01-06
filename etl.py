@@ -42,12 +42,12 @@ def smart_read_excel(content):
         return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
     except: return pd.DataFrame()
 
-# ★★★ 2. 復華專用：自動點擊「查閱更多」 ★★★
-def get_fuhhwa_expand_and_scrape(url):
+# ★★★ 2. 復華專用：暴力位置抓取 & 瘋狂點擊 ★★★
+def get_fuhhwa_aggressive(url):
     print(f"🤖 啟動 Chrome 前往復華官網: {url}")
     
     chrome_options = Options()
-    chrome_options.add_argument("--headless") # 無頭模式
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -59,35 +59,42 @@ def get_fuhhwa_expand_and_scrape(url):
         driver.get(url)
         
         # 等待網頁載入
-        time.sleep(5)
+        print("⏳ 等待網頁載入...")
+        time.sleep(8)
         
-        # --- 關鍵動作：尋找並點擊「更多」按鈕 ---
-        print("🔍 尋找「查閱更多 / 顯示全部」按鈕...")
-        try:
-            # 使用 XPath 尋找包含關鍵字的按鈕或連結
-            # 關鍵字：查閱更多, 顯示更多, 載入更多, More, All
-            buttons = driver.find_elements(By.XPATH, "//*[contains(text(),'查閱更多') or contains(text(),'顯示更多') or contains(text(),'更多資料') or contains(text(),'顯示全部')]")
-            
-            clicked = False
-            for btn in buttons:
-                if btn.is_displayed():
-                    print(f"👉 嘗試點擊按鈕: [{btn.text}]")
-                    # 使用 JavaScript 強制點擊 (最穩)
-                    driver.execute_script("arguments[0].click();", btn)
-                    clicked = True
-                    time.sleep(3) # 等它展開
-            
-            if not clicked:
-                print("⚠️ 未發現明顯的展開按鈕，將直接抓取當前表格 (可能只有前10筆)")
-            else:
-                print("✅ 已點擊展開按鈕！")
+        # --- 策略：瘋狂點擊「更多」直到不能點為止 ---
+        print("🔍 開始尋找並點擊「更多」按鈕...")
+        max_clicks = 10 # 最多點 10 次防止無窮迴圈
+        click_count = 0
+        
+        while click_count < max_clicks:
+            try:
+                # 尋找所有可能的按鈕
+                buttons = driver.find_elements(By.XPATH, "//*[contains(text(),'更多') or contains(text(),'全部') or contains(text(),'查閱')]")
+                clicked_in_this_round = False
                 
-        except Exception as e:
-            print(f"⚠️ 點擊展開時發生小錯誤 (不影響後續嘗試): {e}")
+                for btn in buttons:
+                    if btn.is_displayed():
+                        # 滾動到按鈕位置 (防止被擋住)
+                        driver.execute_script("arguments[0].scrollIntoView(true);", btn)
+                        time.sleep(1)
+                        # 強制點擊
+                        driver.execute_script("arguments[0].click();", btn)
+                        print(f"👉 第 {click_count+1} 次點擊展開...")
+                        time.sleep(3) # 等待資料載入
+                        clicked_in_this_round = True
+                        click_count += 1
+                        break # 一次迴圈只點一個，重新抓取元素避免 stale element
+                
+                if not clicked_in_this_round:
+                    print("✅ 沒有更多按鈕可點了，停止展開。")
+                    break
+            except Exception as e:
+                print(f"⚠️ 點擊過程小插曲: {e}")
+                break
 
-        # --- 開始抓取表格 ---
+        # --- 抓取表格 ---
         print("🕸️ 開始解析網頁表格...")
-        # 重新取得網頁原始碼 (包含展開後的內容)
         page_source = driver.page_source
         dfs = pd.read_html(page_source)
         
@@ -95,16 +102,15 @@ def get_fuhhwa_expand_and_scrape(url):
         max_rows = 0
         
         for temp in dfs:
-            # 尋找包含 "股票名稱" 且 "行數最多" 的表格
-            cols = str(temp.columns)
-            if '股票名稱' in cols or '證券名稱' in cols or '名稱' in cols:
-                # 排除過小的表格
-                if len(temp) > max_rows:
+            # 優先找列數最多的表格
+            if len(temp) > max_rows:
+                # 簡單檢查欄位數，通常是 5 欄 (代號/名稱/股數/金額/權重)
+                if len(temp.columns) >= 3: 
                     max_rows = len(temp)
                     best_df = temp
         
         if not best_df.empty:
-            print(f"✅ 成功抓到表格，共 {len(best_df)} 筆資料 (若 >10 筆代表展開成功)")
+            print(f"✅ 成功抓到表格！共 {len(best_df)} 筆資料 (欄位: {best_df.columns.tolist()})")
             return best_df
             
         return pd.DataFrame()
@@ -139,39 +145,45 @@ def get_etf_data(etf_code):
     # === 復華 00991A ===
     elif etf_code == "00991A":
         url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold"
-        # 使用「點擊展開」法
-        df = get_fuhhwa_expand_and_scrape(url)
+        df = get_fuhhwa_aggressive(url)
 
-    # === 資料清洗 ===
+    # === 資料清洗與強制對應 ===
     if df.empty: return pd.DataFrame()
 
-    # 1. 欄位對應
-    col_map = {
-        '股票代號': ['股票代號', '代號', '證券代號', 'Col_0'],
-        '股票名稱': ['股票名稱', '名稱', '證券名稱', 'Col_1'],
-        '持有股數': ['持有股數', '股數', 'Col_2'],
-        '權重': ['權重', '權重(%)', '比例', 'Col_4']
-    }
-    
-    for target, cands in col_map.items():
-        for cand in cands:
-            matches = [c for c in df.columns if str(c).strip() in cands]
-            if matches:
-                df.rename(columns={matches[0]: target}, inplace=True)
-                break
-    
-    # 2. 數值清洗
+    # ★★★ 關鍵修改：優先使用位置 (Index) 對應 ★★★
+    # 如果表格有 5 欄，不管標題叫什麼，我們強制認定：
+    # Col 0: 代號, Col 1: 名稱, Col 2: 股數, Col 4: 權重
+    if len(df.columns) == 5:
+        print("🔧 偵測到 5 欄表格，啟用強制位置對應...")
+        df.columns = ['股票代號', '股票名稱', '持有股數', '金額', '權重']
+    else:
+        # 如果不是 5 欄，嘗試用關鍵字找
+        col_map = {
+            '股票代號': ['股票代號', '代號', '證券代號'],
+            '股票名稱': ['股票名稱', '名稱', '證券名稱'],
+            '持有股數': ['持有股數', '股數'],
+            '權重': ['權重', '權重(%)', '比例', '持股(%)', '持股比率']
+        }
+        for target, cands in col_map.items():
+            for cand in cands:
+                matches = [c for c in df.columns if str(c).strip() in cands]
+                if matches:
+                    df.rename(columns={matches[0]: target}, inplace=True)
+                    break
+
+    # 數值清洗
     for col in ['持有股數', '權重']:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.replace('%', '').str.replace(',', '')
+            # 先轉字串，處理特殊符號，再轉數字
+            df[col] = df[col].astype(str).str.replace('%', '').str.replace(',', '').str.replace('-', '0')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # 3. 確保輸出
+    # 確保輸出
     if '股票名稱' in df.columns and '持有股數' in df.columns:
         if '股票代號' not in df.columns: df['股票代號'] = "N/A"
-        if '權重' not in df.columns: df['權重'] = 0
+        if '權重' not in df.columns: df['權重'] = 0 # 如果真的沒抓到，至少補0
         
-        # 排除標題行
+        # 排除可能是標題的行
         df = df[df['股票代號'] != '證券代號']
         
         return df[['股票代號', '股票名稱', '持有股數', '權重']]
@@ -180,6 +192,18 @@ def get_etf_data(etf_code):
 
 def process_etf(etf_code, etf_name):
     print(f"\n--- 處理 {etf_name} ({etf_code}) ---")
+    
+    # 強制刪除舊檔以防格式衝突
+    file_path = f'data/{etf_code}_history.csv'
+    if etf_code == "00991A" and os.path.exists(file_path):
+        try:
+            # 讀取檢查，如果權重是0，就刪掉重跑
+            check_df = pd.read_csv(file_path)
+            if '權重' in check_df.columns and check_df['權重'].sum() == 0:
+                print(f"🔥 偵測到權重資料異常 (全為0)，刪除重抓: {file_path}")
+                os.remove(file_path)
+        except: pass
+
     df_new = get_etf_data(etf_code)
     
     if df_new.empty: 
@@ -187,25 +211,11 @@ def process_etf(etf_code, etf_name):
         return ""
     
     today_str = datetime.now().strftime('%Y-%m-%d')
-    file_path = f'data/{etf_code}_history.csv'
     
-    # 強制轉字串
     if '股票代號' in df_new.columns:
         df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df_new['Date'] = today_str
 
-    # ★★★ 自動修復邏輯 (關鍵) ★★★
-    # 如果舊檔案存在，檢查它是否有「權重」欄位
-    # 如果沒有，代表是舊格式，必須刪除重建，否則 app.py 會報錯或顯示 0%
-    if os.path.exists(file_path):
-        try:
-            old_df = pd.read_csv(file_path, nrows=1)
-            if '權重' not in old_df.columns and '權重' in df_new.columns:
-                print(f"🧹 偵測到舊檔案缺少「權重」欄位，自動刪除重建: {file_path}")
-                os.remove(file_path)
-        except: pass
-
-    # 存檔
     mode = 'a' if os.path.exists(file_path) else 'w'
     header = not os.path.exists(file_path)
     df_new.to_csv(file_path, mode=mode, header=header, index=False)
