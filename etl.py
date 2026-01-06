@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 import io
 import time
-import glob
+import shutil
 
 # --- Selenium 設定 ---
 from selenium import webdriver
@@ -42,28 +42,16 @@ def smart_read_excel(content):
         return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
     except: return pd.DataFrame()
 
-# ★★★ 2. 復華專用：強力點擊下載法 ★★★
-def get_fuhhwa_download(url):
+# ★★★ 2. 復華專用：自動點擊「查閱更多」 ★★★
+def get_fuhhwa_expand_and_scrape(url):
     print(f"🤖 啟動 Chrome 前往復華官網: {url}")
     
-    # 設定下載路徑為當前目錄
-    download_dir = os.getcwd()
-    
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless") # 無頭模式
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # 關鍵設定：允許 headless 模式下載檔案
-    prefs = {
-        "download.default_directory": download_dir,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True
-    }
-    chrome_options.add_experimental_option("prefs", prefs)
-
     driver = None
     try:
         service = Service(ChromeDriverManager().install())
@@ -73,61 +61,56 @@ def get_fuhhwa_download(url):
         # 等待網頁載入
         time.sleep(5)
         
-        print("🔍 正在尋找「匯出/下載」按鈕...")
-        download_clicked = False
-        
-        # 嘗試尋找各種可能的下載按鈕 (根據復華官網特性)
-        # 策略 1: 找包含 "匯出" 或 "Excel" 的連結或按鈕
+        # --- 關鍵動作：尋找並點擊「更多」按鈕 ---
+        print("🔍 尋找「查閱更多 / 顯示全部」按鈕...")
         try:
-            # 使用 XPath 尋找包含特定文字的元素
-            buttons = driver.find_elements(By.XPATH, "//*[contains(text(),'匯出') or contains(text(),'Excel') or contains(text(),'下載')]")
+            # 使用 XPath 尋找包含關鍵字的按鈕或連結
+            # 關鍵字：查閱更多, 顯示更多, 載入更多, More, All
+            buttons = driver.find_elements(By.XPATH, "//*[contains(text(),'查閱更多') or contains(text(),'顯示更多') or contains(text(),'更多資料') or contains(text(),'顯示全部')]")
             
+            clicked = False
             for btn in buttons:
-                if btn.is_displayed() and btn.is_enabled():
-                    print(f"🎯 找到下載按鈕: {btn.text}")
-                    # 使用 JavaScript 強制點擊 (比普通點擊更有效)
+                if btn.is_displayed():
+                    print(f"👉 嘗試點擊按鈕: [{btn.text}]")
+                    # 使用 JavaScript 強制點擊 (最穩)
                     driver.execute_script("arguments[0].click();", btn)
-                    download_clicked = True
-                    break
-        except Exception as e:
-            print(f"⚠️ 策略 1 失敗: {e}")
-
-        # 如果策略 1 沒找到，嘗試策略 2: 找特定的 class (例如 icon-excel)
-        if not download_clicked:
-            try:
-                btns = driver.find_elements(By.CSS_SELECTOR, ".icon-xls, .fa-file-excel")
-                if btns:
-                    print("🎯 找到 Excel 圖示按鈕，嘗試點擊...")
-                    driver.execute_script("arguments[0].click();", btns[0])
-                    download_clicked = True
-            except: pass
-
-        if not download_clicked:
-            print("❌ 找不到下載按鈕，無法取得完整清單。")
-            return pd.DataFrame()
-
-        # 等待檔案下載完成
-        print("⏳ 等待檔案下載中...")
-        time.sleep(10) # 給它一點時間下載
-        
-        # 搜尋目錄下最新的 .xls 或 .xlsx 檔案
-        files = glob.glob(os.path.join(download_dir, "*.xls*")) + glob.glob(os.path.join(download_dir, "*.csv"))
-        if not files:
-            print("❌ 下載資料夾中沒看到檔案")
-            return pd.DataFrame()
+                    clicked = True
+                    time.sleep(3) # 等它展開
             
-        # 找到最新的檔案
-        latest_file = max(files, key=os.path.getctime)
-        print(f"✅ 成功下載檔案: {latest_file}")
+            if not clicked:
+                print("⚠️ 未發現明顯的展開按鈕，將直接抓取當前表格 (可能只有前10筆)")
+            else:
+                print("✅ 已點擊展開按鈕！")
+                
+        except Exception as e:
+            print(f"⚠️ 點擊展開時發生小錯誤 (不影響後續嘗試): {e}")
+
+        # --- 開始抓取表格 ---
+        print("🕸️ 開始解析網頁表格...")
+        # 重新取得網頁原始碼 (包含展開後的內容)
+        page_source = driver.page_source
+        dfs = pd.read_html(page_source)
         
-        # 讀取檔案
-        if latest_file.endswith('.csv'):
-            return pd.read_csv(latest_file)
-        else:
-            return pd.read_excel(latest_file)
+        best_df = pd.DataFrame()
+        max_rows = 0
+        
+        for temp in dfs:
+            # 尋找包含 "股票名稱" 且 "行數最多" 的表格
+            cols = str(temp.columns)
+            if '股票名稱' in cols or '證券名稱' in cols or '名稱' in cols:
+                # 排除過小的表格
+                if len(temp) > max_rows:
+                    max_rows = len(temp)
+                    best_df = temp
+        
+        if not best_df.empty:
+            print(f"✅ 成功抓到表格，共 {len(best_df)} 筆資料 (若 >10 筆代表展開成功)")
+            return best_df
+            
+        return pd.DataFrame()
 
     except Exception as e:
-        print(f"❌ 復華下載失敗: {e}")
+        print(f"❌ 復華爬蟲失敗: {e}")
         return pd.DataFrame()
     finally:
         if driver: driver.quit()
@@ -156,8 +139,8 @@ def get_etf_data(etf_code):
     # === 復華 00991A ===
     elif etf_code == "00991A":
         url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold"
-        # 使用新的下載法
-        df = get_fuhhwa_download(url)
+        # 使用「點擊展開」法
+        df = get_fuhhwa_expand_and_scrape(url)
 
     # === 資料清洗 ===
     if df.empty: return pd.DataFrame()
@@ -183,7 +166,7 @@ def get_etf_data(etf_code):
             df[col] = df[col].astype(str).str.replace('%', '').str.replace(',', '')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # 3. 確保輸出欄位
+    # 3. 確保輸出
     if '股票名稱' in df.columns and '持有股數' in df.columns:
         if '股票代號' not in df.columns: df['股票代號'] = "N/A"
         if '權重' not in df.columns: df['權重'] = 0
@@ -211,14 +194,14 @@ def process_etf(etf_code, etf_name):
         df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df_new['Date'] = today_str
 
-    # 自動修復舊檔
+    # ★★★ 自動修復邏輯 (關鍵) ★★★
+    # 如果舊檔案存在，檢查它是否有「權重」欄位
+    # 如果沒有，代表是舊格式，必須刪除重建，否則 app.py 會報錯或顯示 0%
     if os.path.exists(file_path):
         try:
             old_df = pd.read_csv(file_path, nrows=1)
-            # 如果資料量變多了 (例如原本10筆，現在50筆)，建議重建以確保資料一致性
-            # 或者如果欄位不對，也重建
             if '權重' not in old_df.columns and '權重' in df_new.columns:
-                print(f"🧹 偵測到舊檔案格式過時，自動刪除重建: {file_path}")
+                print(f"🧹 偵測到舊檔案缺少「權重」欄位，自動刪除重建: {file_path}")
                 os.remove(file_path)
         except: pass
 
