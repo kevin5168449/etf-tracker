@@ -24,12 +24,15 @@ def send_discord_notify(msg):
     except: pass
 
 def get_roc_date_string():
+    """產生民國日期字串，例如: 115/01/06"""
     now = datetime.now()
-    return f"{now.year - 1911}/{now.month:02d}/{now.day:02d}"
+    roc_year = now.year - 1911
+    return f"{roc_year}/{now.month:02d}/{now.day:02d}"
 
 # 1. 統一專用：聰明讀取 Excel
 def smart_read_excel(content):
     try:
+        # 先偷看前 20 行，找標題在哪
         temp_df = pd.read_excel(io.BytesIO(content), header=None, nrows=20)
         header_row = -1
         for i, row in temp_df.iterrows():
@@ -40,14 +43,13 @@ def smart_read_excel(content):
         return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
     except: return pd.DataFrame()
 
-# 2. 復華專用：使用 Selenium 爬官網表格
-def get_fuhhwa_holdings(url):
+# 2. 復華專用：全自動下載/爬取
+def get_fuhhwa_all_holdings(url):
     print(f"🤖 啟動 Chrome 前往復華官網: {url}")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # 偽裝成真人，避免被復華官網擋
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     driver = None
@@ -56,32 +58,81 @@ def get_fuhhwa_holdings(url):
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.get(url)
         
-        # 等待網頁載入，復華官網比較慢，多給一點時間
+        # 等待網頁載入
+        time.sleep(5)
+        
+        # ★★★ 策略 A：尋找「下載/匯出」連結 (通常包含 .xls, .csv 或 '下載') ★★★
+        print("🔍 正在尋找是否有 Excel/CSV 下載連結...")
         try:
-            # 等待表格出現 (尋找常見的表格標籤)
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.TAG_NAME, "table"))
-            )
-            # 強制等待 5 秒讓 JavaScript 渲染數據
-            time.sleep(5)
-            print("✅ 復華頁面載入完成")
-        except:
-            print("⚠️ 等待超時，嘗試直接抓取...")
+            # 尋找頁面上所有可能包含下載連結的元素
+            links = driver.find_elements(By.TAG_NAME, "a")
+            download_url = None
             
-        return driver.page_source
+            for link in links:
+                href = link.get_attribute("href")
+                text = link.text
+                # 判斷關鍵字：匯出、下載、PCF、Excel、CSV
+                if href and ('.xls' in href or '.csv' in href or 'download' in href.lower() or 'PCF' in text or '匯出' in text or '下載' in text):
+                    print(f"🎯 找到潛在下載連結: [{text}] -> {href}")
+                    download_url = href
+                    # 如果找到明確的 Excel/CSV 檔案，優先使用
+                    if '.xls' in href or '.csv' in href:
+                        break
+            
+            if download_url:
+                print(f"📥 嘗試直接下載檔案: {download_url}")
+                # 使用 requests 下載該檔案
+                file_res = requests.get(download_url, headers={"User-Agent": "Mozilla/5.0"})
+                if file_res.status_code == 200:
+                    try:
+                        # 嘗試當作 Excel 讀取
+                        print("試著以 Excel 格式解析...")
+                        return smart_read_excel(file_res.content)
+                    except:
+                        # 嘗試當作 CSV 讀取
+                        print("試著以 CSV 格式解析...")
+                        return pd.read_csv(io.BytesIO(file_res.content))
+        except Exception as e:
+            print(f"⚠️ 下載策略失敗，轉為抓取頁面表格: {e}")
+
+        # ★★★ 策略 B：如果沒檔案，就暴力爬取網頁上「最大」的表格 ★★★
+        # (通常如果沒下載按鈕，網頁上的表格可能是全部顯示，或者需要翻頁，我們先抓當前頁面最大的表格)
+        print("🕸️ 沒找到檔案，轉為爬取網頁表格...")
+        page_source = driver.page_source
+        dfs = pd.read_html(page_source)
+        
+        best_df = pd.DataFrame()
+        max_rows = 0
+        
+        for temp in dfs:
+            # 我們要找包含 "股票名稱" 且 "行數最多" 的那個表格
+            cols = str(temp.columns)
+            if '股票名稱' in cols or '證券名稱' in cols or '名稱' in cols:
+                # 排除只有一兩行的雜訊表格
+                if len(temp) > max_rows:
+                    max_rows = len(temp)
+                    best_df = temp
+        
+        if not best_df.empty:
+            print(f"✅ 成功抓到最大的表格，共 {len(best_df)} 筆資料")
+            return best_df
+            
+        return pd.DataFrame()
+
     except Exception as e:
-        print(f"❌ 爬蟲失敗: {e}")
-        return None
+        print(f"❌ 復華爬蟲失敗: {e}")
+        return pd.DataFrame()
     finally:
         if driver: driver.quit()
 
 def get_etf_data(etf_code):
     df = pd.DataFrame()
     
-    # === 統一 00981A (官方 Excel 下載) ===
+    # === 統一 00981A (修正代碼為 49YTW) ===
     if etf_code == "00981A":
-        roc_date = get_roc_date_string()
-        url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=61YTW&date={roc_date}&specificDate=false"
+        roc_date = get_roc_date_string() # 自動產生如 115/01/06
+        # 使用您提供的正確網址格式 (注意 fundCode=49YTW)
+        url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=49YTW&date={roc_date}&specificDate=false"
         print(f"📥 下載統一 (00981A): {url}")
         try:
             res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -89,28 +140,13 @@ def get_etf_data(etf_code):
         except Exception as e:
             print(f"❌ 統一失敗: {e}")
 
-    # === 復華 00991A (官網爬蟲) ===
+    # === 復華 00991A (嘗試抓取全部持股) ===
     elif etf_code == "00991A":
-        # 您提供的網址
+        # 這是復華 ETF23 (00991A) 的詳細頁面
         url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold"
-        print(f"🕷️ 爬取復華官網 (00991A)...")
+        print(f"🕷️ 爬取復華 (00991A)...")
         
-        html = get_fuhhwa_holdings(url)
-        if html:
-            try:
-                # 復華官網可能有多個表格，我們要找包含 "股票名稱" 或 "股數" 的那個
-                dfs = pd.read_html(html)
-                for temp in dfs:
-                    # 檢查關鍵欄位
-                    cols = str(temp.columns)
-                    if '股票名稱' in cols or '證券名稱' in cols:
-                        df = temp
-                        print(f"✅ 成功抓到復華持股表格！(共 {len(df)} 筆)")
-                        # 如果表格有 "股數" 欄位，這就是我們要的真愛
-                        if '股數' in cols or '持有股數' in cols:
-                            break
-            except Exception as e:
-                print(f"❌ 解析失敗: {e}")
+        df = get_fuhhwa_all_holdings(url)
 
     # === 資料清洗與標準化 ===
     if df.empty: return pd.DataFrame()
@@ -118,12 +154,11 @@ def get_etf_data(etf_code):
     # 1. 統一欄位名稱
     col_map = {
         '股票代號': ['股票代號', '代號', '股號', 'Symbol', '證券代號'],
-        '股票名稱': ['股票名稱', '名稱', '股名', 'Name', '證券名稱'],
-        '持有股數': ['持有股數', '股數', '庫存股數', '權重', '比例', '持股(%)', '持有股數(股)']
+        '股票名稱': ['股票名稱', '名稱', '股名', 'Name', '證券名稱', '證券'],
+        '持有股數': ['持有股數', '股數', '庫存股數', '權重', '比例', '持股(%)', '持有股數(股)', '股數/單位數']
     }
     for target, cands in col_map.items():
         for cand in cands:
-            # 部分比對 (防止欄位有空白鍵)
             matches = [c for c in df.columns if str(c).strip() in cands]
             if matches:
                 df.rename(columns={matches[0]: target}, inplace=True)
@@ -131,23 +166,13 @@ def get_etf_data(etf_code):
     
     # 2. 數值處理
     if '持有股數' in df.columns:
-        # 移除 % 和 逗號
         df['持有股數'] = df['持有股數'].astype(str).str.replace('%', '').str.replace(',', '')
         df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
-        
-        # 復華官網通常是給 "股數" (數值很大)，如果是 Yahoo 才是 %
-        if etf_code == "00991A":
-             # 如果最大值大於 1000，代表抓到的是真實股數，這很棒！
-             if df['持有股數'].max() > 1000:
-                 print("ℹ️ 成功抓取到真實股數！")
-             else:
-                 print("ℹ️ 抓取到的是權重(%)")
 
     required = ['股票代號', '股票名稱', '持有股數']
-    # 確保欄位存在
-    available = [c for c in required if c in df.columns]
-    if len(available) >= 2 and '股票名稱' in df.columns and '持有股數' in df.columns:
-        # 如果缺代號，暫時補上 N/A
+    
+    # 如果只有名稱和股數，缺代號，暫時補 N/A (有些官網只有名稱)
+    if '股票名稱' in df.columns and '持有股數' in df.columns:
         if '股票代號' not in df.columns: df['股票代號'] = "N/A"
         return df[['股票代號', '股票名稱', '持有股數']]
     
