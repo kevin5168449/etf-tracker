@@ -8,3 +8,4 @@ plotly
 streamlit
 selenium
 webdriver-manager
+yfinance
