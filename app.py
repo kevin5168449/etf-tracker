@@ -27,47 +27,72 @@ def load_data(file_path):
     if not os.path.exists(file_path):
         return None
     try:
-        # 嘗試讀取，加入 utf-8-sig 防止亂碼
         return pd.read_csv(file_path, dtype=str, on_bad_lines='skip', engine='python', encoding='utf-8-sig')
     except:
         return None
 
 def clean_data(df):
     if df is None or df.empty: return pd.DataFrame()
-    
-    # 1. 補齊欄位
     for col in ['持有股數', '權重']:
         if col not in df.columns: df[col] = '0'
-            
-    # 2. 清洗數值
     for col in ['持有股數', '權重']:
         df[col] = df[col].astype(str).str.replace(',', '').str.replace('%', '')
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-    
-    # 3. 日期處理
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'])
-        # 轉回字串以便顯示
         df['DateStr'] = df['Date'].dt.strftime('%Y-%m-%d')
     else:
         return pd.DataFrame()
-
-    # ★★★ 關鍵修復：網頁端強制去重 (防止 CSV 裡有重複資料導致報錯) ★★★
-    # 針對同一天、同一檔股票，只留一筆
     df = df.drop_duplicates(subset=['DateStr', '股票代號'], keep='first')
-    
-    # 按日期排序
     df = df.sort_values('Date', ascending=False)
-    
     return df
 
 # --- 核心邏輯：計算趨勢線數據 ---
 def get_trend_data(full_df, stock_code):
     try:
         history = full_df[full_df['股票代號'] == stock_code].sort_values('Date', ascending=True)
-        return history['權重'].tail(30).tolist()
+        data = history['權重'].tail(30).tolist()
+        if not data: return [0.0, 0.0]
+        if all(x == 0 for x in data): return [0.0, 0.0]
+        return data
     except:
-        return []
+        return [0.0, 0.0]
+
+# --- 判斷狀態標籤 ---
+def determine_status(row):
+    if row['持有股數_old'] == 0 and row['持有股數'] > 0:
+        return "🔥 新進"
+    elif row['持有股數_old'] > 0 and row['持有股數'] == 0:
+        return "👋 剔除"
+    elif row['股數變化'] > 0:
+        return "📈 加碼"
+    elif row['股數變化'] < 0:
+        return "📉 減碼"
+    else:
+        return "➖ 持平"
+
+# ★★★ 新增：色彩樣式函式 ★★★
+def highlight_status(val):
+    """設定狀態欄位的背景色和文字顏色"""
+    if '新進' in val:
+        # 淺綠背景，深綠文字
+        return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+    elif '剔除' in val:
+        # 淺紅背景，深紅文字
+        return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+    elif '加碼' in val:
+        return 'color: #28a745; font-weight: bold;' # 綠色文字
+    elif '減碼' in val:
+        return 'color: #dc3545; font-weight: bold;' # 紅色文字
+    return ''
+
+def color_change_text(val):
+    """設定數值變化的文字顏色 (漲綠跌紅)"""
+    if isinstance(val, (int, float)):
+        color = '#28a745' if val > 0 else '#dc3545' if val < 0 else 'inherit'
+        return f'color: {color}'
+    return ''
+# ★★★★★★★★★★★★★★★★★★★★★
 
 def show_etf_dashboard(etf_code, etf_name):
     st.markdown(f"---")
@@ -101,7 +126,6 @@ def show_etf_dashboard(etf_code, etf_name):
         df_now = df[df['DateStr'] == date1].copy().set_index('股票代號')
         df_old = df[df['DateStr'] == date2].copy().set_index('股票代號')
         
-        # 合併比較
         merged = df_now[['股票名稱', '持有股數', '權重']].join(
             df_old[['持有股數', '權重']], lsuffix='', rsuffix='_old', how='outer'
         ).fillna(0)
@@ -110,7 +134,6 @@ def show_etf_dashboard(etf_code, etf_name):
         merged['股數變化'] = merged['持有股數'] - merged['持有股數_old']
         merged = merged.reset_index()
         
-        # 補名稱
         name_map = pd.concat([df_now['股票名稱'], df_old['股票名稱']]).to_dict()
         merged['股票名稱'] = merged['股票代號'].map(name_map).fillna(merged['股票代號'])
     except Exception as e:
@@ -126,16 +149,15 @@ def show_etf_dashboard(etf_code, etf_name):
     k2.metric("🔥 本日新進", f"{len(new_entries)} 檔", delta_color="normal")
     k3.metric("👋 本日剔除", f"{len(exited)} 檔", delta_color="inverse")
     
-    top_buy = merged.sort_values('權重變化', ascending=False).iloc[0] if not merged.empty else None
-    if top_buy is not None and top_buy['權重變化'] > 0:
-        k4.metric("👑 加碼王", f"{top_buy['股票名稱']}", f"+{top_buy['權重變化']:.2f}%")
+    top_buy = merged.sort_values('股數變化', ascending=False).iloc[0] if not merged.empty else None
+    if top_buy is not None and top_buy['股數變化'] > 0:
+        k4.metric("👑 加碼王", f"{top_buy['股票名稱']}", f"+{int(top_buy['股數變化']):,} 股")
     else:
-        k4.metric("👑 加碼王", "無", "0%")
+        k4.metric("👑 加碼王", "無", "0 股")
 
     # --- 圖表區 ---
     col_chart1, col_chart2 = st.columns(2)
     
-    # 1. 持股權重排行
     with col_chart1:
         st.subheader("📊 持股權重排行")
         curr_holdings = merged[merged['權重'] > 0].sort_values('權重', ascending=False).head(15)
@@ -151,67 +173,68 @@ def show_etf_dashboard(etf_code, etf_name):
         else:
             st.info("暫無持股資料")
 
-    # 2. 經理人動作雷達 (安全版)
     with col_chart2:
-        st.subheader("⚡ 經理人動作 (權重變化)")
-        # 過濾出有變動的
-        changes = merged[merged['權重變化'].abs() > 0].sort_values('權重變化', ascending=True)
-        
+        st.subheader("⚡ 經理人動作 (股數增減)")
+        changes = merged[merged['股數變化'].abs() > 0].sort_values('股數變化', ascending=True)
         if not changes.empty:
             if len(changes) > 15:
                 changes = pd.concat([changes.head(7), changes.tail(8)])
-            
             try:
                 fig2 = go.Figure()
                 fig2.add_trace(go.Bar(
-                    y=changes['股票名稱'], x=changes['權重變化'],
+                    y=changes['股票名稱'], x=changes['股數變化'],
                     orientation='h',
-                    marker=dict(
-                        color=changes['權重變化'],
-                        colorscale='RdBu', 
-                        # ★★★ 修正點：將 midpoint 改為 cmid ★★★
-                        cmid=0  
-                    ),
-                    text=changes['權重變化'].apply(lambda x: f"{x:+.2f}%"),
+                    marker=dict(color=changes['股數變化'], colorscale='RdBu', cmid=0),
+                    text=changes['股數變化'].apply(lambda x: f"{x:+,.0f}"),
                     textposition='outside'
                 ))
-                fig2.update_layout(
-                    height=400, 
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    xaxis_title="權重增減 (%)"
-                )
+                fig2.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0), xaxis_title="股數增減 (股)")
                 st.plotly_chart(fig2, use_container_width=True)
             except Exception as e:
                 st.warning(f"圖表繪製失敗: {e}")
         else:
-            st.info("⚠️ 兩日之間持股無權重變化")
+            st.info("⚠️ 兩日之間持股無股數變化")
 
-    # --- 智慧表格 ---
+    # --- 智慧表格 (含色彩增強) ---
     st.subheader("📋 詳細持股監控")
     
-    table_df = merged.copy()
-    
-    # Sparklines
+    table_df = merged[(merged['持有股數'] > 0) | (merged['持有股數_old'] > 0)].copy()
+    table_df['狀態'] = table_df.apply(determine_status, axis=1)
+
     trend_col = []
     for code in table_df['股票代號']:
         trend_col.append(get_trend_data(df, code))
     table_df['歷史走勢'] = trend_col
 
-    table_df['is_new'] = table_df['權重_old'] == 0
-    table_df = table_df.sort_values(['is_new', '權重'], ascending=[False, False])
+    def get_sort_score(row):
+        score = abs(row['股數變化'])
+        if "新進" in row['狀態']: score += 1000000000
+        if "剔除" in row['狀態']: score += 500000000
+        return score
+
+    table_df['sort_score'] = table_df.apply(get_sort_score, axis=1)
+    table_df = table_df.sort_values(['sort_score', '權重'], ascending=[False, False])
+
+    # ★★★ 應用色彩樣式到 DataFrame ★★★
+    styled_df = table_df.style\
+        .map(highlight_status, subset=['狀態'])\
+        .map(color_change_text, subset=['權重變化', '股數變化'])
+    # ★★★★★★★★★★★★★★★★★★★★
 
     st.dataframe(
-        table_df,
-        column_order=['股票名稱', '股票代號', '權重', '權重變化', '持有股數', '股數變化', '歷史走勢'],
+        styled_df, # 這裡傳入有樣式的 df
+        column_order=['狀態', '股票名稱', '股票代號', '權重', '權重變化', '持有股數', '股數變化', '歷史走勢'],
         hide_index=True,
         use_container_width=True,
-        height=600,
+        height=800,
         column_config={
+            "狀態": st.column_config.TextColumn("動態", width="small"),
             "股票名稱": st.column_config.TextColumn("股票名稱"),
             "權重": st.column_config.ProgressColumn("權重 (%)", format="%.2f%%", min_value=0, max_value=15),
             "權重變化": st.column_config.NumberColumn("權重增減", format="%.2f%%"),
             "持有股數": st.column_config.NumberColumn("持有股數", format="%d"),
-            "歷史走勢": st.column_config.LineChartColumn("近30日趨勢", width="medium", y_min=0, y_max=None)
+            "股數變化": st.column_config.NumberColumn("股數增減", format="%+d"),
+            "歷史走勢": st.column_config.LineChartColumn("近30日趨勢", width="medium")
         }
     )
 
