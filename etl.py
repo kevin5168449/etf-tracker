@@ -17,10 +17,15 @@ from selenium.webdriver.common.by import By
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
 def send_discord_notify(msg):
-    if not DISCORD_WEBHOOK: return
+    if not DISCORD_WEBHOOK: 
+        print("⚠️ 未設定 Discord Webhook，跳過通知")
+        return
     data = {"content": msg, "username": "ETF 監控小幫手"}
-    try: requests.post(DISCORD_WEBHOOK, json=data)
-    except: pass
+    try: 
+        requests.post(DISCORD_WEBHOOK, json=data)
+        print("✅ Discord 通知已發送")
+    except Exception as e: 
+        print(f"❌ Discord 通知發送失敗: {e}")
 
 def get_roc_date_string(delta_days=0):
     target_date = datetime.now() + timedelta(days=delta_days)
@@ -41,7 +46,6 @@ def standardize_df(df, source_name=""):
         df = df.iloc[:, [0, 1, 2, 4]]
         df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
     else:
-        # 策略 B: 關鍵字搜尋
         col_map = {
             '股票代號': ['股票代號', '代號', '證券代號', 'Code'],
             '股票名稱': ['股票名稱', '名稱', '證券名稱', 'Name'],
@@ -55,20 +59,17 @@ def standardize_df(df, source_name=""):
                     df.rename(columns={matches[0]: target}, inplace=True)
                     break
 
-    # 策略 C: 數值強力清洗
     for col in ['持有股數', '權重']:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('%', '').str.replace(',', '').str.replace('-', '0')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # 策略 D: 最終安檢
     required = ['股票代號', '股票名稱', '持有股數', '權重']
     for req in required:
         if req not in df.columns:
             if req == '權重': df[req] = 0 
             elif req == '股票代號': df[req] = 'N/A'
     
-    # 排除標題行
     df = df[df['股票代號'] != '股票代號']
     df = df[df['股票代號'] != '證券代號']
 
@@ -101,7 +102,6 @@ def get_fuhhwa_aggressive(url):
         driver.get(url)
         time.sleep(8)
         
-        # 瘋狂點擊展開
         max_clicks = 10
         click_count = 0
         while click_count < max_clicks:
@@ -161,7 +161,7 @@ def process_etf(etf_code, etf_name):
     
     file_path = f'data/{etf_code}_history.csv'
     
-    # 自動修復舊檔 (檢查權重0的問題)
+    # 自動修復
     if os.path.exists(file_path):
         try:
             check_df = pd.read_csv(file_path)
@@ -171,7 +171,7 @@ def process_etf(etf_code, etf_name):
                 os.remove(file_path)
         except: pass
 
-    # 1. 抓取今日新資料
+    # 1. 抓取今日
     df_new = get_etf_data(etf_code)
     
     if df_new.empty: 
@@ -183,30 +183,22 @@ def process_etf(etf_code, etf_name):
         df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df_new['Date'] = today_str
 
-    # 2. 讀取現有資料 (如果有的話)
+    # 2. 合併與去重
     if os.path.exists(file_path):
         try:
-            # 讀取舊資料 (強制用 utf-8-sig 避免亂碼，全轉字串避免型別衝突)
             old_df = pd.read_csv(file_path, dtype=str)
-            
-            # 合併新舊資料
             final_df = pd.concat([df_new, old_df], ignore_index=True)
-            
-            # ★★★ 關鍵步驟：去重 (Deduplication) ★★★
-            # 針對 'Date' 和 '股票代號' 欄位，如果發現重複，保留第一筆 (通常是剛抓的最新那筆)
             final_df = final_df.drop_duplicates(subset=['Date', '股票代號'], keep='first')
-            
-            print(f"🧹 資料清洗：合併後共 {len(final_df)} 筆，已自動去除重複項目。")
-        except Exception as e:
-            print(f"⚠️ 讀取舊檔失敗 ({e})，將直接覆蓋...")
+            print(f"🧹 合併後共 {len(final_df)} 筆 (已去重)")
+        except:
             final_df = df_new
     else:
         final_df = df_new
 
-    # 3. 存檔 (強制 utf-8-sig)
+    # 3. 存檔
     final_df.to_csv(file_path, index=False, encoding='utf-8-sig')
     
-    return f"✅ {etf_name} 更新成功 (目前總筆數: {len(final_df)})"
+    return f"✅ {etf_name} 更新成功 (總筆數: {len(final_df)})"
 
 def main():
     if not os.path.exists('data'): os.makedirs('data')
@@ -215,6 +207,9 @@ def main():
     msg += "\n" + process_etf("00991A", "主動復華未來")
     
     print(msg)
+    
+    # ★★★ 關鍵補回：發送 Discord 通知 ★★★
+    send_discord_notify(msg)
 
 if __name__ == "__main__":
     main()
