@@ -32,7 +32,7 @@ def get_roc_date_string(delta_days=0):
     roc_year = target_date.year - 1911
     return f"{roc_year}/{target_date.month:02d}/{target_date.day:02d}"
 
-# ★★★ 新增：生成每日簡易戰報 (讓 Discord 講人話) ★★★
+# ★★★ 修復：戰報生成函式 (加入強制轉數字邏輯) ★★★
 def generate_daily_report(df):
     try:
         # 確保日期是排序的 (最新的在上面)
@@ -53,6 +53,11 @@ def generate_daily_report(df):
         merged = df_now[['股票名稱', '持有股數']].join(
             df_prev[['持有股數']], lsuffix='', rsuffix='_old', how='outer'
         ).fillna(0)
+        
+        # ★★★ 關鍵修復：計算前，強制把欄位轉成數字，防止「文字減數字」的錯誤 ★★★
+        merged['持有股數'] = pd.to_numeric(merged['持有股數'], errors='coerce').fillna(0)
+        merged['持有股數_old'] = pd.to_numeric(merged['持有股數_old'], errors='coerce').fillna(0)
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         
         merged['股數變化'] = merged['持有股數'] - merged['持有股數_old']
         
@@ -261,7 +266,7 @@ def process_etf(etf_code, etf_name):
     # 3. 存檔
     final_df.to_csv(file_path, index=False, encoding='utf-8-sig')
     
-    # ★★★ 4. 生成戰報 (Analysis) ★★★
+    # 4. 生成戰報
     report = generate_daily_report(final_df)
     
     return f"✅ **{etf_name}** 更新成功{report}\n"
