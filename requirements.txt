@@ -9,3 +9,4 @@ streamlit
 selenium
 webdriver-manager
 yfinance
+twstock
