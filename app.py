@@ -4,10 +4,11 @@ import os
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
+import twstock # 引入 twstock 套件
 from bs4 import BeautifulSoup
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="ETF 戰情室 Pro (完整版)", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="ETF 戰情室 Pro (twstock版)", page_icon="🦁", layout="wide")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -21,18 +22,19 @@ st.markdown("""
     div[data-testid="stSelectbox"] {
         font-size: 1.1rem;
     }
-    /* 讓現金水位的卡片特別一點 */
-    .cash-card {
-        background-color: #e3f2fd;
-        padding: 10px;
-        border-radius: 8px;
-        border: 1px solid #90caf9;
-        text-align: center;
+    /* 產業標籤樣式 */
+    .sector-tag {
+        font-weight: bold;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background-color: #f1f3f5;
+        color: #495057;
+        border: 1px solid #ced4da;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🦁 2026 主動式 ETF 戰情室 (現金水位 + 產業流向版)")
+st.title("🦁 2026 主動式 ETF 戰情室 (精準分類版)")
 
 # --- 1. 資料處理核心 ---
 @st.cache_data(ttl=60)
@@ -65,20 +67,47 @@ def get_trend_data(full_df, stock_code):
         return data
     except: return [0.0, 0.0]
 
-# --- 2. 簡約分類系統 ---
-CORE_SECTOR_MAP = {
-    '2330': '半導體業', '2303': '半導體業', '2454': '半導體業', '3711': '半導體業',
-    '3443': '半導體業', '3661': '半導體業', '3034': '半導體業', '2379': '半導體業',
-    '2317': '電腦週邊', '2382': '電腦週邊', '3231': '電腦週邊', '2356': '電腦週邊',
-    '3017': '電腦週邊', '3324': '電腦週邊', '2376': '電腦週邊', '6669': '電腦週邊',
-    '2301': '電腦週邊', '3217': '電腦週邊', '3533': '電子零組件', '2308': '電子零組件',
-    '2345': '通信網路', '3045': '通信網路', '2412': '通信網路', '4904': '通信網路',
-    '2881': '金融保險', '2882': '金融保險', '2891': '金融保險', '2886': '金融保險',
-    '2884': '金融保險', '2892': '金融保險', '5880': '金融保險',
-    '2603': '航運業', '2609': '航運業', '2615': '航運業', '2618': '航運業',
-    '1513': '電機機械', '1519': '電機機械', '1605': '電器電纜', '2002': '鋼鐵工業'
+# --- 2. 混合分類系統 (熱門題材 + twstock 資料庫) ---
+
+# A. 第一層：手動鎖定的「熱門細分題材」 (針對電子股做細分)
+HOT_SECTOR_MAP = {
+    # 護國神山
+    '2330': '晶圓代工', '2303': '晶圓代工', '5347': '晶圓代工', '6770': '晶圓代工',
+    # AI 伺服器 / 組裝
+    '2317': 'AI伺服器', '2382': 'AI伺服器', '3231': 'AI伺服器', '2356': 'AI伺服器',
+    '6669': 'AI伺服器', '2376': 'AI伺服器', '2301': 'AI伺服器', '2421': 'AI伺服器',
+    # 散熱
+    '3017': '散熱模組', '3324': '散熱模組', '3653': '散熱模組', '3013': '散熱模組', '8996': '散熱模組',
+    # IC設計 / IP
+    '2454': 'IC設計', '3034': 'IC設計', '2379': 'IC設計', '3035': 'IP矽智財', 
+    '3661': 'IP矽智財', '3443': 'IP矽智財', '3529': 'IP矽智財', '6643': 'IP矽智財',
+    # CoWoS / 設備
+    '3131': 'CoWoS設備', '3583': 'CoWoS設備', '6187': 'CoWoS設備', '6640': 'CoWoS設備',
+    '3711': '封測代工', '2449': '封測代工',
+    # 高速傳輸 / CPO
+    '3081': '光通訊CPO', '4979': '光通訊CPO', '3450': '光通訊CPO', '4966': '高速傳輸', '5269': '高速傳輸',
+    # 網通
+    '2345': '網通設備', '3704': '網通設備', '6285': '網通設備', '3045': '電信運營', '2412': '電信運營',
+    # 電源 / 重電
+    '2308': '電源供應', '1513': '重電綠能', '1519': '重電綠能', '1503': '重電綠能', '1504': '重電綠能',
+    # 貨櫃
+    '2603': '貨櫃航運', '2609': '貨櫃航運', '2615': '貨櫃航運'
 }
 
+# B. 第二層：twstock 官方分類 (處理傳產、金融、標準電子股)
+def get_twstock_sector(code):
+    try:
+        # twstock.codes 是一個巨大的字典，包含所有台股資訊
+        if code in twstock.codes:
+            # 抓取官方分類，例如 "半導體業", "金融保險業", "水泥工業"
+            sector = twstock.codes[code].group
+            # 簡化名稱 (去掉"業"或"工業"讓版面好看)
+            return sector.replace("工業", "").replace("業", "")
+    except:
+        pass
+    return None
+
+# C. 第三層：Yahoo 網路備援 (處理 twstock 沒更新的新股)
 @st.cache_data(ttl=86400)
 def fetch_yahoo_sector(stock_code):
     try:
@@ -95,11 +124,25 @@ def fetch_yahoo_sector(stock_code):
         return None
     except: return None
 
+# D. 綜合分類邏輯
 def get_industry(row):
     code = str(row['股票代號']).strip()
-    if code in CORE_SECTOR_MAP: return CORE_SECTOR_MAP[code]
+    
+    # 1. 最優先：如果是我們手動定義的熱門股 (AI, CoWoS...)
+    if code in HOT_SECTOR_MAP:
+        return HOT_SECTOR_MAP[code]
+    
+    # 2. 次優先：問 twstock 資料庫 (標準分類)
+    # 這一步會消滅 99% 的「其他」
+    ts_sector = get_twstock_sector(code)
+    if ts_sector:
+        return ts_sector
+    
+    # 3. 最後手段：問 Yahoo (針對剛上市的新股)
     online_sector = fetch_yahoo_sector(code)
-    if online_sector: return f"{online_sector}"
+    if online_sector:
+        return f"{online_sector}"
+        
     return '其他'
 
 # --- 3. 狀態判斷與顏色邏輯 (台股配色) ---
@@ -187,7 +230,7 @@ def show_etf_dashboard(etf_code, etf_name):
         st.error(f"Error: {e}")
         return
 
-    # --- KPI 計算 (含現金水位) ---
+    # --- KPI 計算 ---
     top_buy_day = merged.sort_values('股數變化_日', ascending=False).iloc[0]
     buy_val_day = top_buy_day['股數變化_日']
     
@@ -196,33 +239,24 @@ def show_etf_dashboard(etf_code, etf_name):
     
     day_act_count = len(merged[merged['股數變化_日'] != 0])
     
-    # 計算持股總權重 (剩餘的假設為現金/期貨)
     total_stock_weight = merged['權重'].sum()
     cash_position = 100.0 - total_stock_weight
     
-    # 顯示 KPI (5 欄)
     k1, k2, k3, k4, k5 = st.columns(5)
-    
-    # 1. 現金水位 (如果 <0 代表資料有誤或槓桿，這裡設底限為0)
     cash_display = max(0.0, cash_position)
-    k1.metric("💰 現金/避險水位", f"{cash_display:.2f}%", delta=None) # 不顯示漲跌，只顯示水位
+    k1.metric("💰 現金/避險水位", f"{cash_display:.2f}%")
     
-    # 2. 本日加碼
     if buy_val_day > 0:
         k2.metric("👑 本日加碼", f"{top_buy_day['股票名稱']}", f"+{int(buy_val_day):,}")
     else:
         k2.metric("👑 本日加碼", "無", "0")
-    
-    # 3. 本週加碼
+        
     if buy_val_week > 0:
         k3.metric("🏆 本週加碼", f"{top_buy_week['股票名稱']}", f"+{int(buy_val_week):,}")
     else:
         k3.metric("🏆 本週加碼", "無", "0")
 
-    # 4. 異動數
     k4.metric("⚡ 今日異動", f"{day_act_count}")
-    
-    # 5. 持股數
     k5.metric("📊 持股檔數", f"{len(df_now)}")
 
     # --- Section 1: 今日異動 (置頂) ---
@@ -246,14 +280,15 @@ def show_etf_dashboard(etf_code, etf_name):
             column_config={
                 "狀態": st.column_config.TextColumn("動態", width="small"),
                 "股數變化_日": st.column_config.NumberColumn("今日增減", format="%+d"),
-                "權重": st.column_config.NumberColumn("權重", format="%.2f%%")
+                "權重": st.column_config.NumberColumn("權重", format="%.2f%%"),
+                "產業": st.column_config.TextColumn("分類")
             }
         )
     else:
-        st.info("😴 今日經理人按兵不動 (無買賣紀錄)")
+        st.info("😴 今日經理人按兵不動")
 
     # --- Section 2: 戰情圖表區 (熱力圖 + 產業流向) ---
-    col1, col2 = st.columns([2, 1]) # 左邊寬一點給熱力圖
+    col1, col2 = st.columns([2, 1])
     
     with col1:
         st.markdown("### 🗺️ 資金熱力圖 (面積=權重)")
@@ -275,16 +310,11 @@ def show_etf_dashboard(etf_code, etf_name):
 
     with col2:
         st.markdown("### 🌊 本週產業流向")
-        # 計算各產業的本週股數變化總和 (簡單估算)
-        # 注意：嚴格來說應該算金額，但這裡用股數變化做近似趨勢
         sector_flow = merged.groupby('產業')['股數變化_週'].sum().sort_values(ascending=False)
-        # 只取變動最大的前 5 名和後 5 名
         top_sectors = pd.concat([sector_flow.head(3), sector_flow.tail(3)])
         
         if not top_sectors.empty:
-            # 顏色：大於0紅，小於0綠
             colors = ['#d32f2f' if v > 0 else '#2e7d32' for v in top_sectors.values]
-            
             fig_bar = go.Figure(go.Bar(
                 x=top_sectors.values,
                 y=top_sectors.index,
@@ -294,8 +324,8 @@ def show_etf_dashboard(etf_code, etf_name):
             fig_bar.update_layout(
                 margin=dict(t=0, l=0, r=0, b=0), 
                 height=400,
-                xaxis_title="股數增減 (約略)",
-                yaxis=dict(autorange="reversed") # 讓漲的排上面
+                xaxis_title="股數增減 (趨勢)",
+                yaxis=dict(autorange="reversed")
             )
             st.plotly_chart(fig_bar, use_container_width=True)
 
