@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="ETF 戰情室 Pro (台股配色)", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="ETF 戰情室 Pro (完整版)", page_icon="🦁", layout="wide")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -18,14 +18,21 @@ st.markdown("""
         font-weight: 700;
         color: #2c3e50;
     }
-    /* 下拉選單樣式 */
     div[data-testid="stSelectbox"] {
         font-size: 1.1rem;
+    }
+    /* 讓現金水位的卡片特別一點 */
+    .cash-card {
+        background-color: #e3f2fd;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #90caf9;
+        text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🦁 2026 主動式 ETF 戰情室 (台股配色版)")
+st.title("🦁 2026 主動式 ETF 戰情室 (現金水位 + 產業流向版)")
 
 # --- 1. 資料處理核心 ---
 @st.cache_data(ttl=60)
@@ -96,9 +103,6 @@ def get_industry(row):
     return '其他'
 
 # --- 3. 狀態判斷與顏色邏輯 (台股配色) ---
-# 紅色 (Red) = #d32f2f / #ff4b4b
-# 綠色 (Green) = #2e7d32 / #00c853
-
 def determine_status(row):
     if row['持有股數_old'] == 0 and row['持有股數'] > 0: return "✨ 新進"
     elif row['持有股數_old'] > 0 and row['持有股數'] == 0: return "❌ 剔除"
@@ -107,16 +111,14 @@ def determine_status(row):
     else: return "持平"
 
 def highlight_status(val):
-    # 台股邏輯：好事(買進)用紅色，壞事(賣出)用綠色
-    if '新進' in val: return 'color: #d32f2f; font-weight: bold;' # 紅
-    if '剔除' in val: return 'color: #2e7d32; font-weight: bold;' # 綠
-    if '加碼' in val: return 'color: #d32f2f; font-weight: bold;' # 紅
-    if '減碼' in val: return 'color: #2e7d32; font-weight: bold;' # 綠
+    if '新進' in val: return 'color: #d32f2f; font-weight: bold;'
+    if '剔除' in val: return 'color: #2e7d32; font-weight: bold;'
+    if '加碼' in val: return 'color: #d32f2f; font-weight: bold;'
+    if '減碼' in val: return 'color: #2e7d32; font-weight: bold;'
     return 'color: #999;'
 
 def color_change_text(val):
     if isinstance(val, (int, float)):
-        # 正數(增加)變紅，負數(減少)變綠
         return 'color: #d32f2f' if val > 0 else 'color: #2e7d32' if val < 0 else 'color: #ccc'
     return ''
 
@@ -185,7 +187,7 @@ def show_etf_dashboard(etf_code, etf_name):
         st.error(f"Error: {e}")
         return
 
-    # --- KPI ---
+    # --- KPI 計算 (含現金水位) ---
     top_buy_day = merged.sort_values('股數變化_日', ascending=False).iloc[0]
     buy_val_day = top_buy_day['股數變化_日']
     
@@ -194,21 +196,34 @@ def show_etf_dashboard(etf_code, etf_name):
     
     day_act_count = len(merged[merged['股數變化_日'] != 0])
     
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("持股數", f"{len(df_now)}")
+    # 計算持股總權重 (剩餘的假設為現金/期貨)
+    total_stock_weight = merged['權重'].sum()
+    cash_position = 100.0 - total_stock_weight
     
+    # 顯示 KPI (5 欄)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    
+    # 1. 現金水位 (如果 <0 代表資料有誤或槓桿，這裡設底限為0)
+    cash_display = max(0.0, cash_position)
+    k1.metric("💰 現金/避險水位", f"{cash_display:.2f}%", delta=None) # 不顯示漲跌，只顯示水位
+    
+    # 2. 本日加碼
     if buy_val_day > 0:
         k2.metric("👑 本日加碼", f"{top_buy_day['股票名稱']}", f"+{int(buy_val_day):,}")
     else:
         k2.metric("👑 本日加碼", "無", "0")
-        
+    
+    # 3. 本週加碼
     if buy_val_week > 0:
         k3.metric("🏆 本週加碼", f"{top_buy_week['股票名稱']}", f"+{int(buy_val_week):,}")
     else:
         k3.metric("🏆 本週加碼", "無", "0")
 
+    # 4. 異動數
     k4.metric("⚡ 今日異動", f"{day_act_count}")
-    k5.metric("💰 最大持倉", f"{merged.sort_values('權重', ascending=False).iloc[0]['股票名稱']}")
+    
+    # 5. 持股數
+    k5.metric("📊 持股檔數", f"{len(df_now)}")
 
     # --- Section 1: 今日異動 (置頂) ---
     st.markdown("### 🔥 今日焦點異動")
@@ -231,43 +246,61 @@ def show_etf_dashboard(etf_code, etf_name):
             column_config={
                 "狀態": st.column_config.TextColumn("動態", width="small"),
                 "股數變化_日": st.column_config.NumberColumn("今日增減", format="%+d"),
-                "權重": st.column_config.NumberColumn("權重", format="%.2f%%"),
-                "產業": st.column_config.TextColumn("分類")
+                "權重": st.column_config.NumberColumn("權重", format="%.2f%%")
             }
         )
     else:
-        st.info("😴 今日無動作")
+        st.info("😴 今日經理人按兵不動 (無買賣紀錄)")
 
-    # --- Section 2: 板塊熱力圖 (台股紅綠配色) ---
-    st.markdown("### 🗺️ 資金熱力圖 (紅=加碼 | 綠=減碼)")
-    treemap_df = merged[merged['權重'] > 0.1].copy() 
+    # --- Section 2: 戰情圖表區 (熱力圖 + 產業流向) ---
+    col1, col2 = st.columns([2, 1]) # 左邊寬一點給熱力圖
     
-    if not treemap_df.empty:
-        # 定義台股配色：負數=綠(#2e7d32), 0=白(#ffffff), 正數=紅(#d32f2f)
-        custom_colors = [
-            [0.0, '#2e7d32'], # 最小值 (負最多) -> 綠
-            [0.5, '#ffffff'], # 中間值 (0) -> 白
-            [1.0, '#d32f2f']  # 最大值 (正最多) -> 紅
-        ]
+    with col1:
+        st.markdown("### 🗺️ 資金熱力圖 (面積=權重)")
+        treemap_df = merged[merged['權重'] > 0.1].copy() 
+        if not treemap_df.empty:
+            custom_colors = [[0.0, '#2e7d32'], [0.5, '#ffffff'], [1.0, '#d32f2f']]
+            fig_map = px.treemap(
+                treemap_df,
+                path=['產業', '股票名稱'],
+                values='權重',
+                color='股數變化_週',
+                color_continuous_scale=custom_colors,
+                color_continuous_midpoint=0,
+                custom_data=['持有股數', '股數變化_週']
+            )
+            fig_map.update_traces(hovertemplate='<b>%{label}</b><br>權重: %{value:.2f}%<br>週增減: %{customdata[1]:+d}')
+            fig_map.update_layout(margin=dict(t=0, l=0, r=0, b=0), height=400)
+            st.plotly_chart(fig_map, use_container_width=True)
+
+    with col2:
+        st.markdown("### 🌊 本週產業流向")
+        # 計算各產業的本週股數變化總和 (簡單估算)
+        # 注意：嚴格來說應該算金額，但這裡用股數變化做近似趨勢
+        sector_flow = merged.groupby('產業')['股數變化_週'].sum().sort_values(ascending=False)
+        # 只取變動最大的前 5 名和後 5 名
+        top_sectors = pd.concat([sector_flow.head(3), sector_flow.tail(3)])
         
-        fig_map = px.treemap(
-            treemap_df,
-            path=['產業', '股票名稱'],
-            values='權重',
-            color='股數變化_週',
-            color_continuous_scale=custom_colors, # 使用自訂台股色階
-            color_continuous_midpoint=0,
-            custom_data=['持有股數', '股數變化_週']
-        )
-        fig_map.update_traces(
-            hovertemplate='<b>%{label}</b><br>權重: %{value:.2f}%<br>週增減: %{customdata[1]:+d}'
-        )
-        fig_map.update_layout(margin=dict(t=0, l=0, r=0, b=0), height=400)
-        st.plotly_chart(fig_map, use_container_width=True)
+        if not top_sectors.empty:
+            # 顏色：大於0紅，小於0綠
+            colors = ['#d32f2f' if v > 0 else '#2e7d32' for v in top_sectors.values]
+            
+            fig_bar = go.Figure(go.Bar(
+                x=top_sectors.values,
+                y=top_sectors.index,
+                orientation='h',
+                marker_color=colors
+            ))
+            fig_bar.update_layout(
+                margin=dict(t=0, l=0, r=0, b=0), 
+                height=400,
+                xaxis_title="股數增減 (約略)",
+                yaxis=dict(autorange="reversed") # 讓漲的排上面
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
 
     # --- Section 3: 完整持股列表 (單一大表格) ---
     with st.expander("📂 完整持股清單 (點擊表頭可排序)", expanded=False):
-        
         table_df = merged[(merged['持有股數'] > 0) | (merged['持有股數_old'] > 0)].copy()
         table_df['狀態'] = table_df.apply(determine_status, axis=1)
         
