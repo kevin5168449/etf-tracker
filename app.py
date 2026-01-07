@@ -4,7 +4,7 @@ import os
 import plotly.express as px
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="ETF 戰情室 5.0", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="ETF 戰情室 5.2", page_icon="🚀", layout="wide")
 
 # CSS 優化視覺
 st.markdown("""
@@ -114,11 +114,9 @@ def get_detailed_industry(row):
     code = str(row['股票代號']).strip()
     name = str(row['股票名稱']).strip()
     
-    # 1. 優先查表 (題材分類)
     if code in STOCK_SECTOR_MAP:
         return STOCK_SECTOR_MAP[code]
     
-    # 2. 關鍵字補漏 (通用分類)
     if '金' in name and '銀' in name: return '💰 金融'
     if '電' in name: return '🔌 其他電子'
     
@@ -194,11 +192,17 @@ def show_etf_dashboard(etf_code, etf_name):
         merged['股數變化_日'] = merged['持有股數'] - merged['持有股數_old']
         merged['股數變化_週'] = merged['持有股數'] - merged['持有股數_week']
         
-        name_map = pd.concat([df_now['股票名稱'], df_prev['股票名稱']]).to_dict()
-        merged['股票名稱'] = merged.index.map(name_map).fillna(merged.index)
-        merged = merged.reset_index()
+        # ★★★ 絕對修復：改用字典查表法 (完全棄用 fillna) ★★★
+        # 1. 建立字典 (Index: 股票代號 -> Value: 股票名稱)
+        all_names = pd.concat([df_now['股票名稱'], df_prev['股票名稱']])
+        name_map = all_names[~all_names.index.duplicated()].to_dict()
+        
+        # 2. 使用 lambda 函式一對一轉換 (如果字典沒查到，就顯示股票代號)
+        # 這行保證回傳純文字，絕不會有 Index 錯誤
+        merged['股票名稱'] = merged.index.map(lambda x: name_map.get(x, x))
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
-        # ★ 應用究極題材分類 ★
+        merged = merged.reset_index()
         merged['產業'] = merged.apply(get_detailed_industry, axis=1)
 
     except Exception as e:
@@ -233,7 +237,6 @@ def show_etf_dashboard(etf_code, etf_name):
                 values=industry_counts.values, 
                 names=industry_counts.index,
                 hole=0.4,
-                # 使用 Turbo 配色，讓多個題材也能分辨清楚
                 color_discrete_sequence=px.colors.sequential.Turbo
             )
             fig1.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0))
@@ -282,7 +285,7 @@ def show_etf_dashboard(etf_code, etf_name):
         column_order=['狀態', '產業', '股票名稱', '權重', '股數變化_日', '股數變化_週', '持有股數', '歷史走勢'],
         hide_index=True,
         use_container_width=True,
-        height=1000, # 表格拉長一點，因為分類變多了
+        height=1000, 
         column_config={
             "狀態": st.column_config.TextColumn("動態", width="small"),
             "產業": st.column_config.TextColumn("題材", width="small"),
