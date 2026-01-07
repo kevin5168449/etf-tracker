@@ -32,13 +32,77 @@ def get_roc_date_string(delta_days=0):
     roc_year = target_date.year - 1911
     return f"{roc_year}/{target_date.month:02d}/{target_date.day:02d}"
 
+# ★★★ 新增：生成每日簡易戰報 (讓 Discord 講人話) ★★★
+def generate_daily_report(df):
+    try:
+        # 確保日期是排序的 (最新的在上面)
+        df['DateObj'] = pd.to_datetime(df['Date'])
+        dates = df['DateObj'].sort_values(ascending=False).unique()
+        
+        if len(dates) < 2:
+            return "\n(⚠️ 資料累積天數不足，暫無法分析變動)"
+            
+        # 取得今天和昨天的資料
+        d_now = dates[0]
+        d_prev = dates[1]
+        
+        df_now = df[df['DateObj'] == d_now].set_index('股票代號')
+        df_prev = df[df['DateObj'] == d_prev].set_index('股票代號')
+        
+        # 合併比對
+        merged = df_now[['股票名稱', '持有股數']].join(
+            df_prev[['持有股數']], lsuffix='', rsuffix='_old', how='outer'
+        ).fillna(0)
+        
+        merged['股數變化'] = merged['持有股數'] - merged['持有股數_old']
+        
+        # 補名稱 (若剔除，名稱可能在 old 裡)
+        name_map = pd.concat([df_now['股票名稱'], df_prev['股票名稱']]).to_dict()
+        merged['股票名稱'] = merged.index.map(name_map).fillna(merged.index)
+        
+        # 1. 找出新進榜
+        new_entries = merged[(merged['持有股數_old'] == 0) & (merged['持有股數'] > 0)]
+        # 2. 找出剔除榜
+        exited = merged[(merged['持有股數_old'] > 0) & (merged['持有股數'] == 0)]
+        # 3. 找出加碼王 (股數增加最多)
+        top_buy = merged.sort_values('股數變化', ascending=False).head(1)
+        # 4. 找出減碼王 (股數減少最多)
+        top_sell = merged.sort_values('股數變化', ascending=True).head(1)
+        
+        report = ""
+        
+        # 撰寫報告內容
+        if not new_entries.empty:
+            names = ", ".join(new_entries['股票名稱'].tolist())
+            report += f"\n🔥 **新進榜**: {names}"
+            
+        if not exited.empty:
+            names = ", ".join(exited['股票名稱'].tolist())
+            report += f"\n👋 **剔除榜**: {names}"
+            
+        if not top_buy.empty and top_buy['股數變化'].values[0] > 0:
+            name = top_buy['股票名稱'].values[0]
+            change = int(top_buy['股數變化'].values[0])
+            report += f"\n📈 **加碼王**: {name} (+{change:,} 股)"
+            
+        if not top_sell.empty and top_sell['股數變化'].values[0] < 0:
+            name = top_sell['股票名稱'].values[0]
+            change = int(top_sell['股數變化'].values[0])
+            report += f"\n📉 **減碼王**: {name} ({change:,} 股)"
+            
+        if report == "":
+            report = "\n(💤 今日持股無顯著變化)"
+            
+        return report
+
+    except Exception as e:
+        return f"\n(⚠️ 戰報生成失敗: {e})"
+
 # ★★★ 核心大腦：標準化清洗函式 ★★★
 def standardize_df(df, source_name=""):
     if df.empty: return df
     
-    print(f"🔧 [{source_name}] 原始欄位: {df.columns.tolist()}")
-    
-    # 策略 A: 強制位置對應
+    # 強制位置對應
     if source_name == "00981A" and len(df.columns) >= 4:
         df = df.iloc[:, :4] 
         df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
@@ -176,7 +240,7 @@ def process_etf(etf_code, etf_name):
     
     if df_new.empty: 
         print(f"⚠️ 無法獲取數據，跳過。")
-        return ""
+        return f"⚠️ {etf_name} 無法獲取數據"
     
     today_str = datetime.now().strftime('%Y-%m-%d')
     if '股票代號' in df_new.columns:
@@ -189,7 +253,6 @@ def process_etf(etf_code, etf_name):
             old_df = pd.read_csv(file_path, dtype=str)
             final_df = pd.concat([df_new, old_df], ignore_index=True)
             final_df = final_df.drop_duplicates(subset=['Date', '股票代號'], keep='first')
-            print(f"🧹 合併後共 {len(final_df)} 筆 (已去重)")
         except:
             final_df = df_new
     else:
@@ -198,17 +261,22 @@ def process_etf(etf_code, etf_name):
     # 3. 存檔
     final_df.to_csv(file_path, index=False, encoding='utf-8-sig')
     
-    return f"✅ {etf_name} 更新成功 (總筆數: {len(final_df)})"
+    # ★★★ 4. 生成戰報 (Analysis) ★★★
+    report = generate_daily_report(final_df)
+    
+    return f"✅ **{etf_name}** 更新成功{report}\n"
 
 def main():
     if not os.path.exists('data'): os.makedirs('data')
     
-    msg = process_etf("00981A", "主動統一")
-    msg += "\n" + process_etf("00991A", "主動復華未來")
+    msg = ""
+    msg += process_etf("00981A", "主動統一")
+    msg += "\n--------------------\n"
+    msg += process_etf("00991A", "主動復華未來")
     
     print(msg)
     
-    # ★★★ 關鍵補回：發送 Discord 通知 ★★★
+    # 發送 Discord 通知
     send_discord_notify(msg)
 
 if __name__ == "__main__":
