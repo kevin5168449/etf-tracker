@@ -1,284 +1,302 @@
+import streamlit as st
 import pandas as pd
-import requests
 import os
-from datetime import datetime, timedelta
-import io
-import time
-import shutil
+import plotly.express as px
+import plotly.graph_objects as go
 
-# --- Selenium 設定 ---
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
+st.set_page_config(page_title="ETF 戰情室 5.1", page_icon="🚀", layout="wide")
 
-# --- 設定 Discord Webhook ---
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
+# CSS 優化視覺
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #262730;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #41424C;
+    }
+    .stDataFrame { font-size: 1.1rem; }
+    div[data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+</style>
+""", unsafe_allow_html=True)
 
-def send_discord_notify(msg):
-    if not DISCORD_WEBHOOK: 
-        print("⚠️ 未設定 Discord Webhook，跳過通知")
-        return
-    data = {"content": msg, "username": "ETF 監控小幫手"}
-    try: 
-        requests.post(DISCORD_WEBHOOK, json=data)
-        print("✅ Discord 通知已發送")
-    except Exception as e: 
-        print(f"❌ Discord 通知發送失敗: {e}")
+st.title("🚀 2026 主動式 ETF 經理人操盤追蹤 (題材細分版)")
 
-def get_roc_date_string(delta_days=0):
-    target_date = datetime.now() + timedelta(days=delta_days)
-    roc_year = target_date.year - 1911
-    return f"{roc_year}/{target_date.month:02d}/{target_date.day:02d}"
-
-# ★★★ 修復：戰報生成函式 (加入 Series 轉型邏輯) ★★★
-def generate_daily_report(df):
+# --- 資料讀取與修復 ---
+@st.cache_data(ttl=60)
+def load_data(file_path):
+    if not os.path.exists(file_path):
+        return None
     try:
-        df['DateObj'] = pd.to_datetime(df['Date'])
-        dates = df['DateObj'].sort_values(ascending=False).unique()
+        return pd.read_csv(file_path, dtype=str, on_bad_lines='skip', engine='python', encoding='utf-8-sig')
+    except:
+        return None
+
+def clean_data(df):
+    if df is None or df.empty: return pd.DataFrame()
+    for col in ['持有股數', '權重']:
+        if col not in df.columns: df[col] = '0'
+    for col in ['持有股數', '權重']:
+        df[col] = df[col].astype(str).str.replace(',', '').str.replace('%', '')
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+        df['DateStr'] = df['Date'].dt.strftime('%Y-%m-%d')
+    else:
+        return pd.DataFrame()
+    df = df.drop_duplicates(subset=['DateStr', '股票代號'], keep='first')
+    df = df.sort_values('Date', ascending=False)
+    return df
+
+# --- 核心邏輯：計算趨勢線數據 ---
+def get_trend_data(full_df, stock_code):
+    try:
+        history = full_df[full_df['股票代號'] == stock_code].sort_values('Date', ascending=True)
+        data = history['權重'].tail(30).tolist()
+        if not data: return [0.0, 0.0]
+        if all(x == 0 for x in data): return [0.0, 0.0]
+        return data
+    except:
+        return [0.0, 0.0]
+
+# --- ★★★ 究極細分：台股熱門題材字典 ★★★ ---
+STOCK_SECTOR_MAP = {
+    # === 🌬️ 散熱族群 ===
+    '3017': '🌬️ 散熱', '3324': '🌬️ 散熱', '3338': '🌬️ 散熱', '2421': '🌬️ 散熱', 
+    '3013': '🌬️ 散熱', '8996': '🌬️ 散熱', '6275': '🌬️ 散熱', '6230': '🌬️ 散熱',
+    
+    # === 📦 CoWoS / 先進封裝 / 設備 ===
+    '3131': '📦 CoWoS設備', '3583': '📦 CoWoS設備', '6187': '📦 CoWoS設備', '6640': '📦 CoWoS設備',
+    '3711': '📦 封測代工', '2449': '📦 封測代工', '6239': '📦 封測代工', '8150': '📦 封測代工',
+    '6515': '📦 封測材料', '5443': '📦 封測材料',
+    
+    # === 🔦 CPO / 矽光子 / 網通 ===
+    '2345': '🔦 CPO/網通', '4979': '🔦 CPO/網通', '3450': '🔦 CPO/矽光子', '3363': '🔦 CPO/矽光子',
+    '4908': '🔦 CPO/矽光子', '3081': '🔦 CPO/矽光子', '3234': '🔦 CPO/網通', '6442': '🔦 CPO/網通',
+    '5388': '🔦 CPO/網通', '3704': '🔦 CPO/網通',
+    
+    # === 🧠 矽智財 (IP) / ASIC ===
+    '3661': '🧠 矽智財IP', '3443': '🧠 矽智財IP', '3035': '🧠 矽智財IP', '6531': '🧠 矽智財IP',
+    '3529': '🧠 矽智財IP', '6643': '🧠 矽智財IP', '5269': '🧠 高速傳輸', '4966': '🧠 高速傳輸',
+    
+    # === 🤖 AI 伺服器 / 組裝 (ODM) ===
+    '2382': '🤖 AI伺服器', '3231': '🤖 AI伺服器', '2356': '🤖 AI伺服器', '6669': '🤖 AI伺服器',
+    '2376': '🤖 AI伺服器', '2317': '🤖 鴻海家族', '2354': '🤖 鴻海家族', '2301': '🤖 AI伺服器',
+    
+    # === 💾 記憶體 ===
+    '8299': '💾 記憶體', '2408': '💾 記憶體', '2344': '💾 記憶體', '3260': '💾 記憶體', 
+    '2337': '💾 記憶體', '2451': '💾 記憶體', '4967': '💾 記憶體',
+    
+    # === 💎 晶圓代工 ===
+    '2330': '💎 晶圓代工', '2303': '💎 晶圓代工', '5347': '💎 晶圓代工', '3707': '💎 晶圓代工',
+    
+    # === 🧱 PCB / CCL (銅箔基板) ===
+    '2383': '🧱 PCB/CCL', '6213': '🧱 PCB/CCL', '6274': '🧱 PCB/CCL', '2368': '🧱 PCB/CCL',
+    '3037': '🧱 PCB/CCL', '2313': '🧱 PCB/CCL', '3044': '🧱 PCB/CCL',
+    
+    # === ⚡ 重電 / 綠能 / 電線電纜 ===
+    '1513': '⚡ 重電綠能', '1519': '⚡ 重電綠能', '1503': '⚡ 重電綠能', '1504': '⚡ 重電綠能',
+    '1609': '⚡ 電線電纜', '1605': '⚡ 電線電纜', '9958': '⚡ 綠能風電',
+    
+    # === 🚢 航運 ===
+    '2603': '🚢 貨櫃航運', '2609': '🚢 貨櫃航運', '2615': '🚢 貨櫃航運', 
+    '2618': '✈️ 航空', '2610': '✈️ 航空', '2637': '🚢 散裝航運',
+    
+    # === 💰 金融 ===
+    '2881': '💰 金融壽險', '2882': '💰 金融壽險', '2886': '💰 金融', '2891': '💰 金融',
+    '2884': '💰 金融', '2885': '💰 金融', '2883': '💰 金融', '2892': '💰 金融',
+    
+    # === 🧱 傳產 (水泥/鋼鐵/塑膠) ===
+    '2002': '🏗️ 鋼鐵', '1101': '🏗️ 水泥', '1301': '🛢️ 塑膠', '1303': '🛢️ 塑膠', '2105': '🚗 輪胎'
+}
+
+def get_detailed_industry(row):
+    code = str(row['股票代號']).strip()
+    name = str(row['股票名稱']).strip()
+    
+    if code in STOCK_SECTOR_MAP:
+        return STOCK_SECTOR_MAP[code]
+    
+    if '金' in name and '銀' in name: return '💰 金融'
+    if '電' in name: return '🔌 其他電子'
+    
+    return '📦 其他'
+
+# --- 判斷狀態標籤 ---
+def determine_status(row):
+    if row['持有股數_old'] == 0 and row['持有股數'] > 0:
+        return "🔥 新進"
+    elif row['持有股數_old'] > 0 and row['持有股數'] == 0:
+        return "👋 剔除"
+    elif row['股數變化_日'] > 0:
+        return "📈 加碼"
+    elif row['股數變化_日'] < 0:
+        return "📉 減碼"
+    else:
+        return "➖ 持平"
+
+# --- 色彩樣式 ---
+def highlight_status(val):
+    if '新進' in val: return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+    elif '剔除' in val: return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+    elif '加碼' in val: return 'color: #28a745; font-weight: bold;'
+    elif '減碼' in val: return 'color: #dc3545; font-weight: bold;'
+    return ''
+
+def color_change_text(val):
+    if isinstance(val, (int, float)):
+        color = '#28a745' if val > 0 else '#dc3545' if val < 0 else 'inherit'
+        return f'color: {color}'
+    return ''
+
+def show_etf_dashboard(etf_code, etf_name):
+    st.markdown(f"---")
+    st.header(f"📈 {etf_code} {etf_name}")
+    
+    csv_path = f'data/{etf_code}_history.csv'
+    raw_df = load_data(csv_path)
+    if raw_df is None or raw_df.empty:
+        st.warning(f"⚠️ {etf_code} 尚無資料")
+        return
+
+    df = clean_data(raw_df)
+    all_dates = df['DateStr'].unique()
+    if len(all_dates) == 0: return
+
+    # --- 控制列 ---
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        date_now_str = st.selectbox(f"基準日期", all_dates, index=0, key=f"d1_{etf_code}")
+    
+    idx_now = list(all_dates).index(date_now_str)
+    idx_prev = idx_now + 1 if idx_now + 1 < len(all_dates) else idx_now
+    date_prev_str = all_dates[idx_prev]
+    idx_week = idx_now + 5 if idx_now + 5 < len(all_dates) else len(all_dates) - 1
+    date_week_str = all_dates[idx_week]
+
+    with c3:
+        st.caption(f"📅 比較區間： 日變化 ({date_prev_str}) | 週變化 ({date_week_str})")
+    
+    # --- 資料準備 ---
+    try:
+        df_now = df[df['DateStr'] == date_now_str].copy().set_index('股票代號')
+        df_prev = df[df['DateStr'] == date_prev_str].copy().set_index('股票代號')
+        df_week = df[df['DateStr'] == date_week_str].copy().set_index('股票代號')
         
-        if len(dates) < 2:
-            return "\n(⚠️ 資料累積天數不足，暫無法分析變動)"
-            
-        d_now = dates[0]
-        d_prev = dates[1]
-        
-        df_now = df[df['DateObj'] == d_now].set_index('股票代號')
-        df_prev = df[df['DateObj'] == d_prev].set_index('股票代號')
-        
-        merged = df_now[['股票名稱', '持有股數']].join(
+        merged = df_now[['股票名稱', '持有股數', '權重']].join(
             df_prev[['持有股數']], lsuffix='', rsuffix='_old', how='outer'
         ).fillna(0)
         
-        merged['持有股數'] = pd.to_numeric(merged['持有股數'], errors='coerce').fillna(0)
-        merged['持有股數_old'] = pd.to_numeric(merged['持有股數_old'], errors='coerce').fillna(0)
+        merged = merged.join(df_week[['持有股數']], rsuffix='_week', how='outer').fillna(0)
         
-        merged['股數變化'] = merged['持有股數'] - merged['持有股數_old']
+        merged['股數變化_日'] = merged['持有股數'] - merged['持有股數_old']
+        merged['股數變化_週'] = merged['持有股數'] - merged['持有股數_week']
         
-        # --- 名稱對應修復開始 ---
-        # 1. 建立名稱字典 (去除重複索引)
+        # ★★★ 修正點：使用 Series 進行 map 和 fillna (防止 Index 錯誤) ★★★
         name_series = pd.concat([df_now['股票名稱'], df_prev['股票名稱']])
         name_series = name_series[~name_series.index.duplicated(keep='first')]
         name_map = name_series.to_dict()
         
-        # 2. ★★★ 關鍵修復：轉成 Series 再 map/fillna，確保一對一對齊 ★★★
         idx_series = merged.index.to_series()
         merged['股票名稱'] = idx_series.map(name_map).fillna(idx_series)
-        # --- 名稱對應修復結束 ---
-        
-        new_entries = merged[(merged['持有股數_old'] == 0) & (merged['持有股數'] > 0)]
-        exited = merged[(merged['持有股數_old'] > 0) & (merged['持有股數'] == 0)]
-        top_buy = merged.sort_values('股數變化', ascending=False).head(1)
-        top_sell = merged.sort_values('股數變化', ascending=True).head(1)
-        
-        report = ""
-        
-        if not new_entries.empty:
-            names = ", ".join(new_entries['股票名稱'].tolist())
-            report += f"\n🔥 **新進榜**: {names}"
-            
-        if not exited.empty:
-            names = ", ".join(exited['股票名稱'].tolist())
-            report += f"\n👋 **剔除榜**: {names}"
-            
-        if not top_buy.empty and top_buy['股數變化'].values[0] > 0:
-            name = top_buy['股票名稱'].values[0]
-            change = int(top_buy['股數變化'].values[0])
-            report += f"\n📈 **加碼王**: {name} (+{change:,} 股)"
-            
-        if not top_sell.empty and top_sell['股數變化'].values[0] < 0:
-            name = top_sell['股票名稱'].values[0]
-            change = int(top_sell['股數變化'].values[0])
-            report += f"\n📉 **減碼王**: {name} ({change:,} 股)"
-            
-        if report == "":
-            report = "\n(💤 今日持股無顯著變化)"
-            
-        return report
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+        merged = merged.reset_index()
+        merged['產業'] = merged.apply(get_detailed_industry, axis=1)
 
     except Exception as e:
-        return f"\n(⚠️ 戰報生成失敗: {e})"
+        st.error(f"資料處理錯誤: {e}")
+        return
 
-# ★★★ 核心大腦：標準化清洗函式 ★★★
-def standardize_df(df, source_name=""):
-    if df.empty: return df
+    # --- KPI 區塊 ---
+    industry_counts = merged[merged['持有股數']>0]['產業'].value_counts()
+    top_industry = industry_counts.index[0] if not industry_counts.empty else "無"
     
-    if source_name == "00981A" and len(df.columns) >= 4:
-        df = df.iloc[:, :4] 
-        df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
-    elif source_name == "00991A" and len(df.columns) >= 5:
-        df = df.iloc[:, [0, 1, 2, 4]]
-        df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("📊 總持股數", f"{len(df_now)} 檔")
+    
+    top_buy_week = merged.sort_values('股數變化_週', ascending=False).iloc[0]
+    if top_buy_week['股數變化_週'] > 0:
+        k2.metric("🏆 本週加碼王", f"{top_buy_week['股票名稱']}", f"+{int(top_buy_week['股數變化_週']):,} 股")
     else:
-        col_map = {
-            '股票代號': ['股票代號', '代號', '證券代號', 'Code'],
-            '股票名稱': ['股票名稱', '名稱', '證券名稱', 'Name'],
-            '持有股數': ['持有股數', '股數', '庫存股數', 'Shares'],
-            '權重': ['權重', '權重(%)', '比例', '持股(%)', '持股比率', 'Weight']
+        k2.metric("🏆 本週加碼王", "無", "0")
+        
+    k3.metric("🏭 最大持倉題材", top_industry, f"{industry_counts.get(top_industry, 0)} 檔")
+    
+    day_act = merged[merged['股數變化_日'] != 0]
+    k4.metric("⚡ 今日異動檔數", f"{len(day_act)} 檔")
+
+    # --- 圖表區 (產業圓餅圖 + 週變化) ---
+    col_chart1, col_chart2 = st.columns(2)
+    
+    with col_chart1:
+        st.subheader("🏭 持股題材分佈")
+        if not industry_counts.empty:
+            fig1 = px.pie(
+                values=industry_counts.values, 
+                names=industry_counts.index,
+                hole=0.4,
+                color_discrete_sequence=px.colors.sequential.Turbo
+            )
+            fig1.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0))
+            st.plotly_chart(fig1, use_container_width=True)
+        else:
+            st.info("無資料")
+
+    with col_chart2:
+        st.subheader("📅 近一週大戶動作 (前10名)")
+        week_movers = merged[merged['股數變化_週'].abs() > 0].sort_values('股數變化_週', ascending=False).head(10)
+        
+        if not week_movers.empty:
+            fig2 = go.Figure()
+            fig2.add_trace(go.Bar(
+                y=week_movers['股票名稱'], x=week_movers['股數變化_週'],
+                orientation='h',
+                marker=dict(color=week_movers['股數變化_週'], colorscale='RdBu', cmid=0),
+                text=week_movers['股數變化_週'].apply(lambda x: f"{x:+,.0f}"),
+                textposition='outside'
+            ))
+            fig2.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="近5日股數增減")
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("累積數據不足，暫無週變化資料")
+
+    # --- 戰略表格 ---
+    st.subheader("📋 戰略持股監控 (題材細分版)")
+    
+    table_df = merged[(merged['持有股數'] > 0) | (merged['持有股數_old'] > 0)].copy()
+    table_df['狀態'] = table_df.apply(determine_status, axis=1)
+
+    trend_col = []
+    for code in table_df['股票代號']:
+        trend_col.append(get_trend_data(df, code))
+    table_df['歷史走勢'] = trend_col
+
+    table_df['sort_score'] = table_df['股數變化_週'].abs()
+    table_df = table_df.sort_values(['sort_score'], ascending=[False])
+
+    styled_df = table_df.style\
+        .map(highlight_status, subset=['狀態'])\
+        .map(color_change_text, subset=['股數變化_日', '股數變化_週'])
+
+    st.dataframe(
+        styled_df,
+        column_order=['狀態', '產業', '股票名稱', '權重', '股數變化_日', '股數變化_週', '持有股數', '歷史走勢'],
+        hide_index=True,
+        use_container_width=True,
+        height=1000, 
+        column_config={
+            "狀態": st.column_config.TextColumn("動態", width="small"),
+            "產業": st.column_config.TextColumn("題材", width="small"),
+            "股票名稱": st.column_config.TextColumn("股票名稱"),
+            "權重": st.column_config.ProgressColumn("權重", format="%.2f%%", min_value=0, max_value=10),
+            "股數變化_日": st.column_config.NumberColumn("日增減", format="%+d"),
+            "股數變化_週": st.column_config.NumberColumn("週增減", format="%+d"),
+            "持有股數": st.column_config.NumberColumn("庫存", format="%d"),
+            "歷史走勢": st.column_config.LineChartColumn("30日趨勢", width="medium")
         }
-        for target, cands in col_map.items():
-            for cand in cands:
-                matches = [c for c in df.columns if str(c).strip() in cands]
-                if matches:
-                    df.rename(columns={matches[0]: target}, inplace=True)
-                    break
+    )
 
-    for col in ['持有股數', '權重']:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.replace('%', '').str.replace(',', '').str.replace('-', '0')
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-    required = ['股票代號', '股票名稱', '持有股數', '權重']
-    for req in required:
-        if req not in df.columns:
-            if req == '權重': df[req] = 0 
-            elif req == '股票代號': df[req] = 'N/A'
-    
-    df = df[df['股票代號'] != '股票代號']
-    df = df[df['股票代號'] != '證券代號']
-
-    return df[['股票代號', '股票名稱', '持有股數', '權重']]
-
-def smart_read_excel(content):
-    try:
-        temp_df = pd.read_excel(io.BytesIO(content), header=None, nrows=20)
-        header_row = -1
-        for i, row in temp_df.iterrows():
-            row_str = row.astype(str).str.cat()
-            if "股票代號" in row_str or "Code" in row_str:
-                header_row = i
-                break
-        return pd.read_excel(io.BytesIO(content), header=header_row) if header_row != -1 else pd.DataFrame()
-    except: return pd.DataFrame()
-
-def get_fuhhwa_aggressive(url):
-    print(f"🤖 啟動 Chrome 前往復華官網: {url}")
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    driver = None
-    try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.get(url)
-        time.sleep(8)
-        
-        max_clicks = 10
-        click_count = 0
-        while click_count < max_clicks:
-            try:
-                buttons = driver.find_elements(By.XPATH, "//*[contains(text(),'更多') or contains(text(),'全部') or contains(text(),'查閱')]")
-                clicked = False
-                for btn in buttons:
-                    if btn.is_displayed():
-                        driver.execute_script("arguments[0].scrollIntoView(true);", btn)
-                        time.sleep(1)
-                        driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(3)
-                        clicked = True
-                        click_count += 1
-                        break
-                if not clicked: break
-            except: break
-
-        dfs = pd.read_html(driver.page_source)
-        best_df = pd.DataFrame()
-        max_rows = 0
-        for temp in dfs:
-            if len(temp) > max_rows and len(temp.columns) >= 3:
-                max_rows = len(temp)
-                best_df = temp
-        return best_df
-    except Exception as e:
-        print(f"❌ 復華爬蟲失敗: {e}")
-        return pd.DataFrame()
-    finally:
-        if driver: driver.quit()
-
-def get_etf_data(etf_code):
-    df = pd.DataFrame()
-    if etf_code == "00981A":
-        roc_date = get_roc_date_string(0)
-        url = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=49YTW&date={roc_date}&specificDate=false"
-        print(f"📥 下載統一 (00981A): {url}")
-        try:
-            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            df = smart_read_excel(res.content)
-            if df.empty:
-                roc_date_yest = get_roc_date_string(-1)
-                url_yest = f"https://www.ezmoney.com.tw/ETF/Transaction/PCFExcelNPOI?fundCode=49YTW&date={roc_date_yest}&specificDate=false"
-                res = requests.get(url_yest, headers={"User-Agent": "Mozilla/5.0"})
-                df = smart_read_excel(res.content)
-        except Exception as e: print(f"❌ 統一失敗: {e}")
-
-    elif etf_code == "00991A":
-        url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold"
-        df = get_fuhhwa_aggressive(url)
-
-    return standardize_df(df, source_name=etf_code)
-
-def process_etf(etf_code, etf_name):
-    print(f"\n--- 處理 {etf_name} ({etf_code}) ---")
-    
-    file_path = f'data/{etf_code}_history.csv'
-    
-    # 自動修復
-    if os.path.exists(file_path):
-        try:
-            check_df = pd.read_csv(file_path)
-            if '權重' not in check_df.columns:
-                os.remove(file_path)
-            elif not check_df.empty and '權重' in check_df.columns and check_df['權重'].sum() == 0:
-                os.remove(file_path)
-        except: pass
-
-    # 1. 抓取今日
-    df_new = get_etf_data(etf_code)
-    
-    if df_new.empty: 
-        print(f"⚠️ 無法獲取數據，跳過。")
-        return f"⚠️ {etf_name} 無法獲取數據"
-    
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    if '股票代號' in df_new.columns:
-        df_new['股票代號'] = df_new['股票代號'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    df_new['Date'] = today_str
-
-    # 2. 合併與去重
-    if os.path.exists(file_path):
-        try:
-            old_df = pd.read_csv(file_path, dtype=str)
-            final_df = pd.concat([df_new, old_df], ignore_index=True)
-            final_df = final_df.drop_duplicates(subset=['Date', '股票代號'], keep='first')
-        except:
-            final_df = df_new
-    else:
-        final_df = df_new
-
-    # 3. 存檔
-    final_df.to_csv(file_path, index=False, encoding='utf-8-sig')
-    
-    # 4. 生成戰報
-    report = generate_daily_report(final_df)
-    
-    return f"✅ **{etf_name}** 更新成功{report}\n"
-
-def main():
-    if not os.path.exists('data'): os.makedirs('data')
-    
-    msg = ""
-    msg += process_etf("00981A", "主動統一")
-    msg += "\n--------------------\n"
-    msg += process_etf("00991A", "主動復華未來")
-    
-    print(msg)
-    
-    # 發送 Discord 通知
-    send_discord_notify(msg)
-
-if __name__ == "__main__":
-    main()
+# 執行顯示
+show_etf_dashboard("00981A", "主動統一台股增長")
+show_etf_dashboard("00991A", "主動復華未來50")
