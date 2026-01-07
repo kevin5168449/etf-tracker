@@ -7,9 +7,9 @@ import requests
 from bs4 import BeautifulSoup
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="ETF 戰情室 Lite", page_icon="📉", layout="wide")
+st.set_page_config(page_title="ETF 戰情室 Pro", page_icon="🦁", layout="wide")
 
-# --- CSS 極簡優化 ---
+# --- CSS 優化 ---
 st.markdown("""
 <style>
     .stDataFrame { font-size: 1.05rem; }
@@ -25,15 +25,19 @@ st.markdown("""
         color: #555;
         background-color: #f8f9fa;
         padding: 8px 12px;
-        border-left: 4px solid #6c757d; /* 灰色系，低調專業 */
+        border-left: 4px solid #6c757d;
         border-radius: 4px;
         margin-top: 15px;
         margin-bottom: 5px;
     }
+    /* 調整下拉選單樣式，讓它寬一點 */
+    div[data-testid="stSelectbox"] {
+        font-size: 1.1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📉 2026 主動式 ETF 戰情室 (簡約版)")
+st.title("🦁 2026 主動式 ETF 戰情室 (智能熱力版)")
 
 # --- 1. 資料處理核心 ---
 @st.cache_data(ttl=60)
@@ -66,60 +70,41 @@ def get_trend_data(full_df, stock_code):
         return data
     except: return [0.0, 0.0]
 
-# --- 2. 簡約分類系統 (本地核心名單 + 網路查詢) ---
-
-# 只列出最核心、最常見的題材，剩下的交給網路查，保持程式碼乾淨
+# --- 2. 簡約分類系統 (核心名單 + 網路查詢) ---
 CORE_SECTOR_MAP = {
-    # 半導體
     '2330': '半導體業', '2303': '半導體業', '2454': '半導體業', '3711': '半導體業',
     '3443': '半導體業', '3661': '半導體業', '3034': '半導體業', '2379': '半導體業',
-    # 電腦週邊 (AI 伺服器/散熱)
     '2317': '電腦週邊', '2382': '電腦週邊', '3231': '電腦週邊', '2356': '電腦週邊',
     '3017': '電腦週邊', '3324': '電腦週邊', '2376': '電腦週邊', '6669': '電腦週邊',
     '2301': '電腦週邊', '3217': '電腦週邊', '3533': '電子零組件', '2308': '電子零組件',
-    # 網通
     '2345': '通信網路', '3045': '通信網路', '2412': '通信網路', '4904': '通信網路',
-    # 金融
     '2881': '金融保險', '2882': '金融保險', '2891': '金融保險', '2886': '金融保險',
     '2884': '金融保險', '2892': '金融保險', '5880': '金融保險',
-    # 傳產
     '2603': '航運業', '2609': '航運業', '2615': '航運業', '2618': '航運業',
     '1513': '電機機械', '1519': '電機機械', '1605': '電器電纜', '2002': '鋼鐵工業'
 }
 
 @st.cache_data(ttl=86400)
 def fetch_yahoo_sector(stock_code):
-    """
-    簡單的爬蟲：去 Yahoo 奇摩股市抓分類
-    """
     try:
         url = f"https://tw.stock.yahoo.com/quote/{stock_code}" 
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=2)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, 'html.parser')
-            # 抓取 Yahoo 頁面特徵 (連結包含 /category/)
             links = soup.find_all('a')
             for link in links:
                 href = link.get('href', '')
                 if '/h/category/' in href:
-                    return link.text.strip() # 直接回傳中文分類，如 "半導體業"
+                    return link.text.strip()
         return None
-    except:
-        return None
+    except: return None
 
 def get_industry(row):
     code = str(row['股票代號']).strip()
-    
-    # 1. 先查本地核心名單 (速度快)
-    if code in CORE_SECTOR_MAP:
-        return CORE_SECTOR_MAP[code]
-    
-    # 2. 查不到就去網路上問 Yahoo (確保準確)
+    if code in CORE_SECTOR_MAP: return CORE_SECTOR_MAP[code]
     online_sector = fetch_yahoo_sector(code)
-    if online_sector:
-        return f"{online_sector}" # 加個星號標記是網路上抓的
-        
+    if online_sector: return f"{online_sector}"
     return '其他'
 
 # --- 3. 狀態判斷 ---
@@ -157,11 +142,34 @@ def show_etf_dashboard(etf_code, etf_name):
     all_dates = df['DateStr'].unique()
     if len(all_dates) == 0: return
 
-    # 日期選擇
-    c1, c2, c3 = st.columns([1, 1, 2])
-    with c1:
-        date_now_str = st.selectbox(f"基準日期", all_dates, index=0, key=f"d1_{etf_code}")
+    # --- 日期選單邏輯優化 (整合比較資訊) ---
+    date_options = {}
+    for i, date_str in enumerate(all_dates):
+        # 計算前日
+        idx_prev = i + 1 if i + 1 < len(all_dates) else i
+        prev_date = all_dates[idx_prev]
+        # 計算上週
+        idx_week = i + 5 if i + 5 < len(all_dates) else len(all_dates) - 1
+        week_date = all_dates[idx_week]
+        
+        # 組合顯示字串: "2024-01-08 (vs 01-07 | vs 01-01)"
+        if i == len(all_dates) - 1:
+             label = f"{date_str} (初始資料)"
+        else:
+             label = f"{date_str} (vs 前日 {prev_date[5:]} | vs 上週 {week_date[5:]})"
+        
+        date_options[date_str] = label
+
+    # 顯示下拉選單 (format_func 讓選單顯示我們做好的 label，但回傳實際日期)
+    date_now_str = st.selectbox(
+        "📅 選擇日期 (自動比對前日與上週)", 
+        options=all_dates, 
+        index=0, 
+        format_func=lambda x: date_options[x],
+        key=f"d1_{etf_code}"
+    )
     
+    # 取得對應的比較日期索引
     idx_now = list(all_dates).index(date_now_str)
     idx_prev = idx_now + 1 if idx_now + 1 < len(all_dates) else idx_now
     idx_week = idx_now + 5 if idx_now + 5 < len(all_dates) else len(all_dates) - 1
@@ -184,14 +192,14 @@ def show_etf_dashboard(etf_code, etf_name):
         merged['股票名稱'] = merged.index.map(lambda x: name_map.get(x, x))
         
         merged = merged.reset_index()
-        # ★ 執行分類 (簡單版)
+        # 執行分類
         merged['產業'] = merged.apply(get_industry, axis=1)
 
     except Exception as e:
         st.error(f"Error: {e}")
         return
 
-    # --- KPI ---
+    # --- KPI 區塊 ---
     top_buy_day = merged.sort_values('股數變化_日', ascending=False).iloc[0]
     buy_val_day = top_buy_day['股數變化_日']
     
@@ -216,7 +224,7 @@ def show_etf_dashboard(etf_code, etf_name):
     k4.metric("⚡ 今日異動", f"{day_act_count}")
     k5.metric("💰 最大持倉", f"{merged.sort_values('權重', ascending=False).iloc[0]['股票名稱']}")
 
-    # --- Section 1: 今日異動 (置頂，一眼看) ---
+    # --- Section 1: 今日異動 (置頂) ---
     st.markdown("### 🔥 今日焦點異動")
     action_df = merged[merged['股數變化_日'] != 0].copy()
     
@@ -243,31 +251,29 @@ def show_etf_dashboard(etf_code, etf_name):
     else:
         st.info("😴 今日無動作")
 
-    # --- Section 2: 圖表 ---
-    col1, col2 = st.columns(2)
-    with col1:
-        st.caption("持股產業分佈")
-        ind_counts = merged[merged['持有股數']>0]['產業'].value_counts()
-        if not ind_counts.empty:
-            fig = px.pie(
-                values=ind_counts.values, names=ind_counts.index, hole=0.5,
-                color_discrete_sequence=px.colors.qualitative.Pastel
-            )
-            fig.update_traces(textinfo='percent+label', textposition='inside')
-            fig.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), height=250)
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.caption("近週動作排行 (Top 10)")
-        week_top = merged[merged['股數變化_週'].abs() > 0].sort_values('股數變化_週', ascending=False).head(10)
-        if not week_top.empty:
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                y=week_top['股票名稱'], x=week_top['股數變化_週'], orientation='h',
-                marker=dict(color=week_top['股數變化_週'], colorscale='Tealrose', cmid=0)
-            ))
-            fig.update_layout(height=250, margin=dict(t=10, b=10, l=0, r=0), xaxis_title=None)
-            st.plotly_chart(fig, use_container_width=True)
+    # --- Section 2: 板塊熱力圖 (Treemap) ---
+    st.markdown("### 🗺️ 資金熱力圖 (面積=權重 | 顏色=買賣)")
+    
+    # 過濾掉權重太小的避免太雜
+    treemap_df = merged[merged['權重'] > 0.1].copy() 
+    
+    if not treemap_df.empty:
+        fig_map = px.treemap(
+            treemap_df,
+            path=['產業', '股票名稱'],
+            values='權重',
+            color='股數變化_週',
+            color_continuous_scale='RdBu', # 紅買藍賣
+            color_continuous_midpoint=0,
+            custom_data=['持有股數', '股數變化_週']
+        )
+        fig_map.update_traces(
+            hovertemplate='<b>%{label}</b><br>權重: %{value:.2f}%<br>週增減: %{customdata[1]:+d}'
+        )
+        fig_map.update_layout(margin=dict(t=0, l=0, r=0, b=0), height=400)
+        st.plotly_chart(fig_map, use_container_width=True)
+    else:
+        st.info("無足夠資料顯示熱力圖")
 
     # --- Section 3: 完整清單 (折疊) ---
     with st.expander("📂 完整持股列表 (依產業分類)", expanded=False):
