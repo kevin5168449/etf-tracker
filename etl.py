@@ -32,51 +32,48 @@ def get_roc_date_string(delta_days=0):
     roc_year = target_date.year - 1911
     return f"{roc_year}/{target_date.month:02d}/{target_date.day:02d}"
 
-# ★★★ 修復：戰報生成函式 (加入強制轉數字邏輯) ★★★
+# ★★★ 修復：戰報生成函式 (加入 Series 轉型邏輯) ★★★
 def generate_daily_report(df):
     try:
-        # 確保日期是排序的 (最新的在上面)
         df['DateObj'] = pd.to_datetime(df['Date'])
         dates = df['DateObj'].sort_values(ascending=False).unique()
         
         if len(dates) < 2:
             return "\n(⚠️ 資料累積天數不足，暫無法分析變動)"
             
-        # 取得今天和昨天的資料
         d_now = dates[0]
         d_prev = dates[1]
         
         df_now = df[df['DateObj'] == d_now].set_index('股票代號')
         df_prev = df[df['DateObj'] == d_prev].set_index('股票代號')
         
-        # 合併比對
         merged = df_now[['股票名稱', '持有股數']].join(
             df_prev[['持有股數']], lsuffix='', rsuffix='_old', how='outer'
         ).fillna(0)
         
-        # ★★★ 關鍵修復：計算前，強制把欄位轉成數字，防止「文字減數字」的錯誤 ★★★
         merged['持有股數'] = pd.to_numeric(merged['持有股數'], errors='coerce').fillna(0)
         merged['持有股數_old'] = pd.to_numeric(merged['持有股數_old'], errors='coerce').fillna(0)
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         
         merged['股數變化'] = merged['持有股數'] - merged['持有股數_old']
         
-        # 補名稱 (若剔除，名稱可能在 old 裡)
-        name_map = pd.concat([df_now['股票名稱'], df_prev['股票名稱']]).to_dict()
-        merged['股票名稱'] = merged.index.map(name_map).fillna(merged.index)
+        # --- 名稱對應修復開始 ---
+        # 1. 建立名稱字典 (去除重複索引)
+        name_series = pd.concat([df_now['股票名稱'], df_prev['股票名稱']])
+        name_series = name_series[~name_series.index.duplicated(keep='first')]
+        name_map = name_series.to_dict()
         
-        # 1. 找出新進榜
+        # 2. ★★★ 關鍵修復：轉成 Series 再 map/fillna，確保一對一對齊 ★★★
+        idx_series = merged.index.to_series()
+        merged['股票名稱'] = idx_series.map(name_map).fillna(idx_series)
+        # --- 名稱對應修復結束 ---
+        
         new_entries = merged[(merged['持有股數_old'] == 0) & (merged['持有股數'] > 0)]
-        # 2. 找出剔除榜
         exited = merged[(merged['持有股數_old'] > 0) & (merged['持有股數'] == 0)]
-        # 3. 找出加碼王 (股數增加最多)
         top_buy = merged.sort_values('股數變化', ascending=False).head(1)
-        # 4. 找出減碼王 (股數減少最多)
         top_sell = merged.sort_values('股數變化', ascending=True).head(1)
         
         report = ""
         
-        # 撰寫報告內容
         if not new_entries.empty:
             names = ", ".join(new_entries['股票名稱'].tolist())
             report += f"\n🔥 **新進榜**: {names}"
@@ -107,7 +104,6 @@ def generate_daily_report(df):
 def standardize_df(df, source_name=""):
     if df.empty: return df
     
-    # 強制位置對應
     if source_name == "00981A" and len(df.columns) >= 4:
         df = df.iloc[:, :4] 
         df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
