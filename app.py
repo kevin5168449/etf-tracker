@@ -7,32 +7,27 @@ import plotly.graph_objects as go
 # --- 頁面基本設定 ---
 st.set_page_config(page_title="ETF 戰情室 Pro", page_icon="📈", layout="wide")
 
-# --- CSS 優化：極簡風格、去除多餘邊框、優化折疊標題 ---
+# --- CSS 優化 ---
 st.markdown("""
 <style>
-    /* 全局字體大小微調 */
     .stDataFrame { font-size: 1.05rem; }
-    
-    /* 指標卡片樣式 */
     div[data-testid="stMetricValue"] {
         font-size: 1.5rem !important;
         font-weight: 700;
         color: #333;
     }
-    
-    /* 折疊選單標題優化 */
-    .streamlit-expanderHeader {
+    /* 讓分類標題更明顯，因為現在不折疊了 */
+    .industry-header {
+        font-size: 1.2rem;
         font-weight: 600;
-        font-size: 1.1rem;
+        color: #2c3e50;
+        margin-top: 20px;
+        margin-bottom: 10px;
+        padding-left: 10px;
+        border-left: 5px solid #0d6efd;
         background-color: #f8f9fa;
-        border-radius: 5px;
-        border-left: 5px solid #ced4da; /* 預設灰色左邊條 */
-    }
-    
-    /* 讓有異動的折疊標題更明顯 (這部分需配合邏輯動態調整，這裡先做基礎優化) */
-    .streamlit-expanderHeader:hover {
-        background-color: #e9ecef;
-        color: #000;
+        padding: 5px 10px;
+        border-radius: 4px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -45,82 +40,76 @@ def load_data(file_path):
     if not os.path.exists(file_path):
         return None
     try:
-        # 讀取 CSV，確保所有欄位先視為字串以免格式跑掉
         return pd.read_csv(file_path, dtype=str, on_bad_lines='skip', engine='python', encoding='utf-8-sig')
     except:
         return None
 
 def clean_data(df):
     if df is None or df.empty: return pd.DataFrame()
-    
-    # 補全缺失欄位
     for col in ['持有股數', '權重']:
         if col not in df.columns: df[col] = '0'
-            
-    # 數值清洗：移除逗號與百分比符號，轉為浮點數
     for col in ['持有股數', '權重']:
         df[col] = df[col].astype(str).str.replace(',', '').str.replace('%', '')
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-    # 日期處理
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'])
         df['DateStr'] = df['Date'].dt.strftime('%Y-%m-%d')
     else:
         return pd.DataFrame()
-        
-    # 去除重複並排序
     df = df.drop_duplicates(subset=['DateStr', '股票代號'], keep='first')
     df = df.sort_values('Date', ascending=False)
     return df
 
-# --- 2. 趨勢線邏輯 (Sparkline) ---
+# --- 2. 趨勢線邏輯 ---
 def get_trend_data(full_df, stock_code):
     try:
         history = full_df[full_df['股票代號'] == stock_code].sort_values('Date', ascending=True)
-        # 取最近 30 筆權重數據
         data = history['權重'].tail(30).tolist()
         if not data or all(x == 0 for x in data): return [0.0, 0.0]
         return data
     except:
         return [0.0, 0.0]
 
-# --- 3. 產業精細分類對照表 (無 Emoji 版) ---
+# --- 3. 究極產業分類表 (台股全宇宙) ---
 STOCK_SECTOR_MAP = {
-    # 散熱模組
-    '3017': '散熱模組', '3324': '散熱模組', '3653': '散熱模組', '2421': '散熱模組', '3013': '散熱模組',
-    # 連接器
-    '3533': '連接器', '3217': '連接器', '3023': '連接器',
-    # 系統組裝 (鴻海家族/電腦)
-    '2317': '系統組裝', '3231': '系統組裝', '2382': '系統組裝', '2356': '系統組裝', '2376': '系統組裝', '6669': '系統組裝',
-    # 半導體與IP
-    '2330': '半導體製造', '2454': 'IC設計', '3661': '矽智財IP', '3443': '矽智財IP', '3035': '矽智財IP', '3529': '矽智財IP',
-    # PCB與相關
-    '3044': 'PCB/CCL', '3715': 'PCB/CCL', '2313': 'PCB/CCL', '2383': 'PCB/CCL', '6274': 'PCB/CCL',
-    # 設備與封測
-    '3583': '半導體設備', '3131': '半導體設備', '3711': '封測代工', '2449': '封測代工',
-    # 網通/光通訊
-    '3081': '光通訊', '4979': '光通訊', '2345': '網通', '3045': '電信', '4908': '光通訊',
-    # 傳產與金融
-    '2881': '金融', '2882': '金融', '2884': '金融', '2886': '金融', '2891': '金融',
-    '2603': '航運', '2609': '航運', '1513': '重電綠能', '1519': '重電綠能',
-    # 特定零組件 (解決"其他"問題)
-    '3211': '電池模組', '3515': '工業電腦', '3008': '光學鏡頭', '2308': '電源供應'
+    # === 👑 半導體核心 ===
+    '2330': '半導體製造', '2303': '半導體製造', '5347': '半導體製造', '6770': '半導體製造',
+    '2454': 'IC設計', '3034': 'IC設計', '2379': 'IC設計', '4961': 'IC設計', '3035': 'IC設計',
+    '3661': '矽智財IP', '3443': '矽智財IP', '3529': '矽智財IP', '6643': '矽智財IP', '6531': '矽智財IP',
+    # === 🤖 AI 伺服器 ===
+    '2317': '系統組裝', '2382': '系統組裝', '3231': '系統組裝', '2356': '系統組裝',
+    '2376': '系統組裝', '6669': '系統組裝', '2324': '系統組裝', '2301': '系統組裝',
+    # === ❄️ 散熱模組 ===
+    '3017': '散熱模組', '3324': '散熱模組', '3653': '散熱模組', '2421': '散熱模組',
+    '3013': '散熱模組', '8996': '散熱模組', '6230': '散熱模組',
+    # === 📦 設備與封測 ===
+    '3131': 'CoWoS設備', '3583': 'CoWoS設備', '6187': 'CoWoS設備', '6640': 'CoWoS設備',
+    '3711': '封測代工', '2449': '封測代工', '6239': '封測代工', '8150': '封測代工',
+    # === 🔗 零組件 ===
+    '3533': '連接器', '3217': '連接器', '3023': '連接器', '2327': '被動元件',
+    '2308': '電源供應', '3305': '電源供應', '3211': '電池模組',
+    '3037': 'PCB載板', '2383': 'CCL銅箔', '3044': 'PCB硬板', '3715': 'PCB硬板',
+    # === ⚡ 網通/光通訊 ===
+    '2345': '網通設備', '3081': '光通訊CPO', '4979': '光通訊CPO', '3045': '電信運營',
+    # === 傳產/金融 ===
+    '2603': '貨櫃航運', '2609': '貨櫃航運', '2618': '航空客運',
+    '1513': '重電綠能', '1519': '重電綠能', '1605': '電線電纜',
+    '2881': '金控壽險', '2882': '金控壽險', '2884': '金控銀行', '2886': '金控銀行',
+    '2891': '金控銀行', '5880': '公股行庫',
+    '2002': '鋼鐵工業', '1101': '水泥建材', '1301': '塑膠化工', '2395': '工業電腦'
 }
 
 def get_detailed_industry(row):
     code = str(row['股票代號']).strip()
-    # 優先查表
     if code in STOCK_SECTOR_MAP:
         return STOCK_SECTOR_MAP[code]
-    
-    # 查無資料時的備用關鍵字邏輯
     name = str(row['股票名稱']).strip()
-    if '金' in name and '銀' in name: return '金融'
-    if '電' in name: return '電子零組件'
-    return '其他'
+    if any(x in name for x in ['金', '銀', '壽', '保']): return '金融保險'
+    if any(x in name for x in ['電', '技', '光', '科']): return '其他電子'
+    if any(x in name for x in ['運', '航', '海']): return '航運'
+    return '其他傳產'
 
-# --- 4. 狀態判斷與樣式 (文字化) ---
+# --- 4. 狀態判斷與樣式 ---
 def determine_status(row):
     if row['持有股數_old'] == 0 and row['持有股數'] > 0: return "新進"
     elif row['持有股數_old'] > 0 and row['持有股數'] == 0: return "剔除"
@@ -129,40 +118,37 @@ def determine_status(row):
     else: return "持平"
 
 def highlight_status(val):
-    # 透過 CSS 顏色讓狀態更直觀
-    if val == '新進': return 'color: #d63384; font-weight: bold;' # 桃紅色
-    if val == '剔除': return 'color: #dc3545; font-weight: bold;' # 紅色
-    if val == '加碼': return 'color: #198754; font-weight: bold;' # 綠色
-    if val == '減碼': return 'color: #0dcaf0;' # 淺藍色
-    return 'color: #6c757d;' # 灰色
+    if val == '新進': return 'color: #d63384; font-weight: bold;'
+    if val == '剔除': return 'color: #dc3545; font-weight: bold;'
+    if val == '加碼': return 'color: #198754; font-weight: bold;'
+    if val == '減碼': return 'color: #0dcaf0;'
+    return 'color: #6c757d;'
 
 def color_change_text(val):
     if isinstance(val, (int, float)):
         return 'color: #198754' if val > 0 else 'color: #dc3545' if val < 0 else 'color: #adb5bd'
     return ''
 
-# --- 5. 核心顯示邏輯 (Show Dashboard) ---
+# --- 5. 主程式 ---
 def show_etf_dashboard(etf_code, etf_name):
     st.markdown("---")
     st.subheader(f"📊 {etf_code} {etf_name}")
     
-    # 讀取 CSV
     csv_path = f'data/{etf_code}_history.csv'
     raw_df = load_data(csv_path)
     if raw_df is None or raw_df.empty:
-        st.warning(f"⚠️ {etf_code} 尚無資料，請確認 data 資料夾內是否有 csv 檔案")
+        st.warning(f"⚠️ {etf_code} 尚無資料")
         return
 
     df = clean_data(raw_df)
     all_dates = df['DateStr'].unique()
     if len(all_dates) == 0: return
 
-    # 日期控制列
+    # 日期選擇
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         date_now_str = st.selectbox(f"基準日期", all_dates, index=0, key=f"d1_{etf_code}")
     
-    # 自動計算前一日與上週索引
     idx_now = list(all_dates).index(date_now_str)
     idx_prev = idx_now + 1 if idx_now + 1 < len(all_dates) else idx_now
     idx_week = idx_now + 5 if idx_now + 5 < len(all_dates) else len(all_dates) - 1
@@ -170,42 +156,36 @@ def show_etf_dashboard(etf_code, etf_name):
     with c3:
         st.caption(f"📅 比較區間： vs 前日 ({all_dates[idx_prev]}) | vs 上週 ({all_dates[idx_week]})")
     
-    # 資料合併與計算
     try:
         df_now = df[df['DateStr'] == date_now_str].copy().set_index('股票代號')
         df_prev = df[df['DateStr'] == all_dates[idx_prev]].copy().set_index('股票代號')
         df_week = df[df['DateStr'] == all_dates[idx_week]].copy().set_index('股票代號')
         
-        # 合併今日與昨日
         merged = df_now[['股票名稱', '持有股數', '權重']].join(
             df_prev[['持有股數']], lsuffix='', rsuffix='_old', how='outer'
         ).fillna(0)
         
-        # 合併上週
         merged = merged.join(df_week[['持有股數']], rsuffix='_week', how='outer').fillna(0)
-        
-        # 計算變化量
         merged['股數變化_日'] = merged['持有股數'] - merged['持有股數_old']
         merged['股數變化_週'] = merged['持有股數'] - merged['持有股數_week']
         
-        # 補回名稱 (若今日無庫存，名稱會變成 NaN，需從歷史資料找回)
         all_names = pd.concat([df_now['股票名稱'], df_prev['股票名稱']])
         name_map = all_names[~all_names.index.duplicated()].to_dict()
         merged['股票名稱'] = merged.index.map(lambda x: name_map.get(x, x))
         
         merged = merged.reset_index()
-        # 套用產業分類
         merged['產業'] = merged.apply(get_detailed_industry, axis=1)
 
     except Exception as e:
-        st.error(f"資料處理發生錯誤: {e}")
+        st.error(f"資料處理錯誤: {e}")
         return
 
-    # --- KPI 顯示 ---
+    # KPI 區塊
+    industry_counts = merged[merged['持有股數']>0]['產業'].value_counts()
+    
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("📊 總持股數", f"{len(df_now)} 檔")
     
-    # 本週買超最多
     top_buy = merged.sort_values('股數變化_週', ascending=False).iloc[0]
     buy_val = top_buy['股數變化_週']
     if buy_val > 0:
@@ -213,62 +193,75 @@ def show_etf_dashboard(etf_code, etf_name):
     else:
         k2.metric("🏆 本週加碼王", "無", "0")
 
-    # 今日異動檔數
     day_act_count = len(merged[merged['股數變化_日'] != 0])
     k4.metric("⚡ 今日異動", f"{day_act_count} 檔")
 
-    # --- 戰略持股列表 (智慧折疊版) ---
-    st.write("##### 📋 持股配置詳情 (異動優先)")
+    # --- 圖表區 (圓餅圖回歸 + 週變化) ---
+    col_chart1, col_chart2 = st.columns(2)
     
-    # 1. 準備基礎資料表
-    # 過濾掉早已全數賣出且無動作的雜訊
-    table_df = merged[(merged['持有股數'] > 0) | (merged['持有股數_old'] > 0)].copy()
-    table_df['狀態'] = table_df.apply(determine_status, axis=1)
+    with col_chart1:
+        st.caption("🏭 持股題材分佈 (簡潔版)")
+        if not industry_counts.empty:
+            # 使用 Plotly Pie Chart，但設定為簡潔風格
+            fig1 = px.pie(
+                values=industry_counts.values, 
+                names=industry_counts.index,
+                hole=0.5, # 甜甜圈樣式比較現代
+                color_discrete_sequence=px.colors.qualitative.Pastel # 使用柔和色系
+            )
+            fig1.update_traces(textinfo='percent+label', textposition='inside')
+            fig1.update_layout(showlegend=False, margin=dict(l=20, r=20, t=20, b=20), height=300)
+            st.plotly_chart(fig1, use_container_width=True)
+        else:
+            st.info("無資料")
 
-    # 取得 30日趨勢數據
-    trend_col = []
-    for code in table_df['股票代號']:
-        trend_col.append(get_trend_data(df, code))
-    table_df['歷史走勢'] = trend_col
+    with col_chart2:
+        st.caption("📅 近一週大戶動作 (前10名)")
+        week_movers = merged[merged['股數變化_週'].abs() > 0].sort_values('股數變化_週', ascending=False).head(10)
+        
+        if not week_movers.empty:
+            fig2 = go.Figure()
+            fig2.add_trace(go.Bar(
+                y=week_movers['股票名稱'], x=week_movers['股數變化_週'],
+                orientation='h',
+                marker=dict(color=week_movers['股數變化_週'], colorscale='Tealrose', cmid=0), # 簡潔的紅綠配色
+            ))
+            fig2.update_layout(height=300, margin=dict(l=0, r=0, t=20, b=20), xaxis_title=None)
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("暫無週變化資料")
 
-    # 2. 計算各產業總權重，並排序 (大權重產業排上面)
-    industry_stats = table_df.groupby('產業')['權重'].sum().sort_values(ascending=False)
-    
-    # 3. 找出前三大重倉產業 (用於預設展開)
-    top_3_industries = industry_stats.head(3).index.tolist()
+    # --- 戰略持股列表 (全顯示，只折疊外層) ---
+    # 這裡使用一個大 Expander 包住所有內容，預設展開 (expanded=True)
+    with st.expander("📋 完整持股配置詳情 (點擊收合)", expanded=True):
+        
+        table_df = merged[(merged['持有股數'] > 0) | (merged['持有股數_old'] > 0)].copy()
+        table_df['狀態'] = table_df.apply(determine_status, axis=1)
 
-    # 4. 迴圈生成折疊區塊
-    for industry_name, total_weight in industry_stats.items():
-        sub_df = table_df[table_df['產業'] == industry_name].copy()
-        
-        # --- ⚡ 關鍵排序邏輯：讓有動作的股票置頂 ---
-        # 建立輔助排序欄位：取變化的絕對值
-        sub_df['abs_change'] = sub_df['股數變化_日'].abs()
-        # 先排異動大小(大->小)，再排權重(大->小)
-        sub_df = sub_df.sort_values(['abs_change', '權重'], ascending=[False, False])
-        
-        # --- 🔍 偵測該分類內是否有關鍵動作 ---
-        has_new = '新進' in sub_df['狀態'].values
-        has_removed = '剔除' in sub_df['狀態'].values
-        has_increase = '加碼' in sub_df['狀態'].values
-        has_decrease = '減碼' in sub_df['狀態'].values
-        
-        # --- 📂 標題動態生成 (Smart Header) ---
-        status_badges = []
-        if has_new: status_badges.append("✨新進")
-        if has_removed: status_badges.append("❌剔除")
-        if has_increase: status_badges.append("📈加碼")
-        
-        # 如果有徽章，顯示在標題旁
-        status_str = f" | {' '.join(status_badges)}" if status_badges else ""
-        expander_label = f"▼ {industry_name} (佔比: {total_weight:.2f}%){status_str}"
-        
-        # --- 🔓 智慧展開邏輯 (Smart Expand) ---
-        # 展開條件：是前三大產業 OR 有新進 OR 有剔除 OR 有加減碼
-        should_expand = (industry_name in top_3_industries) or has_new or has_removed or has_increase or has_decrease
+        trend_col = []
+        for code in table_df['股票代號']:
+            trend_col.append(get_trend_data(df, code))
+        table_df['歷史走勢'] = trend_col
 
-        with st.expander(expander_label, expanded=should_expand):
-            # 樣式映射
+        # 計算產業總權重排序
+        industry_stats = table_df.groupby('產業')['權重'].sum().sort_values(ascending=False)
+        
+        # 迴圈顯示 (不使用折疊，直接列出)
+        for industry_name, total_weight in industry_stats.items():
+            sub_df = table_df[table_df['產業'] == industry_name].copy()
+            
+            # 排序：異動 > 權重
+            sub_df['abs_change'] = sub_df['股數變化_日'].abs()
+            sub_df = sub_df.sort_values(['abs_change', '權重'], ascending=[False, False])
+            
+            # 顯示標題區塊 (使用 Markdown 模擬標題效果)
+            st.markdown(f"""
+            <div class='industry-header'>
+                {industry_name} <span style='font-size:0.9rem; color:#666; font-weight:normal;'>(佔比: {total_weight:.2f}%)</span>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 樣式設定
             styled_sub_df = sub_df.style\
                 .map(highlight_status, subset=['狀態'])\
                 .map(color_change_text, subset=['股數變化_日', '股數變化_週'])
@@ -276,7 +269,6 @@ def show_etf_dashboard(etf_code, etf_name):
             # 顯示表格
             st.dataframe(
                 styled_sub_df,
-                # 定義欄位順序：狀態最左，代號第二
                 column_order=['狀態', '股票代號', '股票名稱', '權重', '股數變化_日', '股數變化_週', '持有股數', '歷史走勢'],
                 hide_index=True,
                 use_container_width=True,
@@ -292,6 +284,6 @@ def show_etf_dashboard(etf_code, etf_name):
                 }
             )
 
-# --- 執行儀表板 ---
+# 執行
 show_etf_dashboard("00981A", "主動統一台股增長")
 show_etf_dashboard("00991A", "主動復華未來50")
