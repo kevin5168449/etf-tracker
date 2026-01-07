@@ -169,7 +169,8 @@ def show_etf_dashboard(etf_code, etf_name):
                     marker=dict(
                         color=changes['權重變化'],
                         colorscale='RdBu', 
-                        midpoint=0
+                        # ★★★ 修正點：將 midpoint 改為 cmid ★★★
+                        cmid=0  
                     ),
                     text=changes['權重變化'].apply(lambda x: f"{x:+.2f}%"),
                     textposition='outside'
@@ -181,7 +182,7 @@ def show_etf_dashboard(etf_code, etf_name):
                 )
                 st.plotly_chart(fig2, use_container_width=True)
             except Exception as e:
-                st.warning(f"圖表繪製失敗 (可能是數據異常): {e}")
+                st.warning(f"圖表繪製失敗: {e}")
         else:
             st.info("⚠️ 兩日之間持股無權重變化")
 
@@ -190,7 +191,7 @@ def show_etf_dashboard(etf_code, etf_name):
     
     table_df = merged.copy()
     
-    # Sparklines (加入防呆)
+    # Sparklines
     trend_col = []
     for code in table_df['股票代號']:
         trend_col.append(get_trend_data(df, code))
