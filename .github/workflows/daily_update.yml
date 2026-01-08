@@ -22,7 +22,9 @@ def get_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
+    # 偽裝 User-Agent
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    
     service = Service(ChromeDriverManager().install())
     return webdriver.Chrome(service=service, options=chrome_options)
 
@@ -42,7 +44,7 @@ def save_to_csv(etf_code, new_df):
     print(f"✅ [{etf_code}] 成功儲存 {len(new_df)} 筆資料！")
 
 def clean_columns(df):
-    """將多層索引欄位壓扁為單一字串，並移除空白"""
+    """將多層索引欄位(Tuple)壓扁為單一字串，並移除空白"""
     new_columns = []
     for col in df.columns:
         if isinstance(col, tuple):
@@ -65,6 +67,7 @@ def update_00981A():
     try:
         driver.get(url)
         try:
+            # 等待表格出現
             WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         except:
             print("⚠️ 等待超時")
@@ -80,9 +83,6 @@ def update_00981A():
             df = clean_columns(df)
             cols = "".join(df.columns)
             
-            # 印出欄位來除錯
-            # print(f"表格 {i} 欄位: {df.columns.tolist()}")
-
             if "代號" in cols and ("權重" in cols or "比重" in cols):
                 print(f"🎯 鎖定第 {i+1} 個表格")
                 
@@ -108,7 +108,7 @@ def update_00981A():
             target_df['權重'] = target_df['權重'].astype(str).str.replace('%', '')
             save_to_csv("00981A", target_df)
         else:
-            print("❌ [00981A] 找不到成分股表格，請檢查 Log 中的欄位名稱。")
+            print("❌ [00981A] 找不到成分股表格，請檢查 Log。")
 
     except Exception as e:
         print(f"❌ [00981A] 系統錯誤: {e}")
@@ -116,7 +116,7 @@ def update_00981A():
         driver.quit()
 
 # ==========================================
-# 00991A: 復華投信 (增加等待與 Log)
+# 00991A: 復華投信 (增加等待與除錯 Log)
 # ==========================================
 def update_00991A():
     print("\n🚀 [00991A] 啟動爬蟲：復華投信...")
@@ -147,7 +147,7 @@ def update_00991A():
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             
             # ★★★ 增加等待時間，讓表格載入 ★★★
-            time.sleep(5) 
+            time.sleep(8) 
         except:
             print("⚠️ 點擊操作略過")
 
@@ -163,7 +163,7 @@ def update_00991A():
             cols = "".join(df.columns)
             
             # ★★★ 關鍵除錯：把看到的所有表格欄位印出來 ★★★
-            print(f"   📋 表格 {i} 欄位: {df.columns.tolist()[:5]}...") 
+            print(f"   📋 表格 {i} 欄位 (前5): {df.columns.tolist()[:5]}...") 
 
             if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
                 print(f"🎯 鎖定表格 {i}")
