@@ -6,6 +6,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
@@ -22,7 +23,6 @@ def get_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    # 偽裝成真人
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     service = Service(ChromeDriverManager().install())
     return webdriver.Chrome(service=service, options=chrome_options)
@@ -31,9 +31,7 @@ def save_to_csv(etf_code, new_df):
     file_path = f"{DATA_DIR}/{etf_code}_history.csv"
     today_str = datetime.now().strftime('%Y-%m-%d')
     
-    # 確保是 DataFrame
     if isinstance(new_df, list): new_df = pd.DataFrame(new_df)
-    
     new_df.insert(0, 'Date', today_str)
     
     if os.path.exists(file_path):
@@ -47,12 +45,11 @@ def save_to_csv(etf_code, new_df):
     print(f"✅ [{etf_code}] 成功儲存 {len(new_df)} 筆資料！")
 
 def clean_column_name(col):
-    """清理欄位名稱"""
     if isinstance(col, tuple): col = "".join(str(c) for c in col)
     return str(col).strip().replace(" ", "").replace("\n", "")
 
 # ==========================================
-# 00981A: 統一投信 (寬鬆模式 + 詳細 Log)
+# 00981A: 統一投信 (已成功，保持原樣)
 # ==========================================
 def update_00981A():
     print("\n🚀 [00981A] 啟動爬蟲：統一投信...")
@@ -61,31 +58,22 @@ def update_00981A():
     
     try:
         driver.get(url)
-        # 等待網頁載入
         time.sleep(8)
         
         html = driver.page_source
         dfs = pd.read_html(html)
-        print(f"🔍 網頁中發現 {len(dfs)} 個表格")
+        print(f"🔍 00981A 發現 {len(dfs)} 個表格")
         
         target_df = pd.DataFrame()
         
         for i, df in enumerate(dfs):
-            # 清理欄位
             df.columns = [clean_column_name(c) for c in df.columns]
             cols = "".join(df.columns)
             
-            # 除錯用：印出每個表格的欄位，讓我們知道它長怎樣
-            print(f"   📋 表格 {i} 欄位: {df.columns.tolist()[:5]}")
-
-            # 寬鬆條件：只要有 (代號 OR 名稱) AND (權重 OR 比重 OR %)
             has_id_name = any(x in cols for x in ["代號", "名稱", "證券"])
-            has_weight = any(x in cols for x in ["權重", "比重", "%", "比例"])
+            has_weight = any(x in cols for x in ["權重", "比重", "%", "比例", "股數"])
             
             if has_id_name and has_weight:
-                print(f"🎯 鎖定表格 {i}")
-                
-                # 智慧對應欄位
                 rename_map = {}
                 for c in df.columns:
                     if "代號" in c: rename_map[c] = "股票代號"
@@ -95,31 +83,29 @@ def update_00981A():
                 
                 df = df.rename(columns=rename_map)
                 
-                # 補齊缺失欄位
                 if "股票名稱" in df.columns:
                     if "股票代號" not in df.columns: df["股票代號"] = df["股票名稱"]
                     if "持有股數" not in df.columns: df["持有股數"] = 0
-                    if "權重" not in df.columns: continue # 權重是必須的
+                    if "權重" not in df.columns: continue 
                     
                     target_df = df.copy()
-                    break # 找到就跳出
+                    break 
         
         if not target_df.empty:
             target_df = target_df[['股票代號', '股票名稱', '持有股數', '權重']]
-            # 數據清洗
             target_df['持有股數'] = target_df['持有股數'].astype(str).str.replace(',', '').str.replace('--', '0')
             target_df['權重'] = target_df['權重'].astype(str).str.replace('%', '')
             save_to_csv("00981A", target_df)
         else:
-            print("❌ [00981A] 找不到符合的表格，請檢查上方 Log 的欄位名稱。")
+            print("❌ [00981A] 找不到表格")
 
     except Exception as e:
-        print(f"❌ [00981A] 系統錯誤: {e}")
+        print(f"❌ [00981A] 錯誤: {e}")
     finally:
         driver.quit()
 
 # ==========================================
-# 00991A: 復華投信 (智慧等待行數增加)
+# 00991A: 復華投信 (強力點擊 + 驗收式等待)
 # ==========================================
 def update_00991A():
     print("\n🚀 [00991A] 啟動爬蟲：復華投信...")
@@ -130,80 +116,103 @@ def update_00991A():
         driver.get(url)
         time.sleep(5)
         
-        # 1. 先計算原本有幾行 (通常是 10 行)
-        initial_rows = len(driver.find_elements(By.TAG_NAME, "tr"))
-        print(f"📊 點擊前行數: {initial_rows}")
-
-        # 2. 點擊展開
-        print("👆 尋找並點擊「更多/展開」按鈕...")
+        print("👆 嘗試定位 #stockhold 區塊...")
         try:
-            js_script = """
-            var btns = document.querySelectorAll('a, button, div');
-            for (var i = 0; i < btns.length; i++) {
-                if (btns[i].innerText.includes('更多') || btns[i].innerText.includes('展開')) {
-                    btns[i].click();
-                    return true;
-                }
-            }
-            return false;
-            """
-            driver.execute_script(js_script)
+            # 1. 嘗試捲動到持股區塊，確保按鈕在畫面中
+            target_div = driver.find_element(By.ID, "stockhold")
+            driver.execute_script("arguments[0].scrollIntoView(true);", target_div)
+            time.sleep(2)
+        except:
+            print("⚠️ 找不到 #stockhold ID，使用一般捲動")
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight/1.5);")
+            time.sleep(2)
+
+        # 2. 尋找並點擊按鈕
+        print("👆 尋找「更多/展開」按鈕...")
+        clicked = False
+        try:
+            # 策略 A: 找含有特定文字的元素 (最通用)
+            xpath = "//*[contains(text(),'更多') or contains(text(),'展開') or contains(text(),'查閱全部') or contains(text(),'More')]"
+            buttons = driver.find_elements(By.XPATH, xpath)
             
-            # 3. 智慧等待：每 1 秒檢查一次，最多等 15 秒，直到行數變多
-            print("⏳ 等待資料展開中...")
-            for _ in range(15):
-                current_rows = len(driver.find_elements(By.TAG_NAME, "tr"))
-                if current_rows > initial_rows + 5: # 如果行數明顯增加
-                    print(f"✅ 偵測到資料載入！當前行數: {current_rows}")
+            for btn in buttons:
+                # 只點擊可見的按鈕
+                if btn.is_displayed():
+                    print(f"   👉 嘗試點擊按鈕: {btn.text}")
+                    # 雙重保險：先用 JS 點，再用 ActionChains 點
+                    driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(1)
+                    try:
+                        ActionChains(driver).move_to_element(btn).click().perform()
+                    except: pass
+                    clicked = True
                     break
-                time.sleep(1)
-            else:
-                print("⚠️ 等待超時，資料可能未完全展開，嘗試直接抓取...")
-                
         except Exception as e:
-            print(f"⚠️ 點擊操作異常: {e}")
+            print(f"⚠️ 點擊嘗試失敗: {e}")
 
-        # 4. 抓取表格 (此時 HTML 應該已經包含新資料)
-        html = driver.page_source
-        dfs = pd.read_html(html)
-        print(f"🔍 復華網頁發現 {len(dfs)} 個表格")
+        if not clicked:
+            print("⚠️ 未發現明顯的展開按鈕，將嘗試直接抓取...")
 
+        # 3. 驗收式等待：不斷重讀表格，直到資料變多
+        print("⏳ 正在驗收資料是否展開 (最多等 20 秒)...")
         best_df = pd.DataFrame()
-        max_rows = 0
         
-        # 貪婪模式：找最大的那個表
-        for i, df in enumerate(dfs):
-            df.columns = [clean_column_name(c) for c in df.columns]
-            cols = "".join(df.columns)
-
-            if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
-                rename_map = {}
-                for c in df.columns:
-                    if "代號" in c: rename_map[c] = "股票代號"
-                    elif "名稱" in c: rename_map[c] = "股票名稱"
-                    elif "股數" in c or "庫存" in c: rename_map[c] = "持有股數"
-                    elif "權重" in c or "比例" in c: rename_map[c] = "權重"
+        for attempt in range(10): # 嘗試 10 次，每次間隔 2 秒
+            try:
+                html = driver.page_source
+                dfs = pd.read_html(html)
                 
-                df = df.rename(columns=rename_map)
+                # 在所有表格中找最長的那一個
+                current_best_df = pd.DataFrame()
+                max_rows = 0
                 
-                # 我們要找行數最多的那個 (避免抓到 header 或 summary)
-                if len(df) > max_rows:
-                    if "股票名稱" in df.columns and "權重" in df.columns:
-                        max_rows = len(df)
-                        best_df = df.copy()
-                        print(f"🌟 發現潛在目標: 表格 {i} (共 {max_rows} 筆)")
+                for df in dfs:
+                    df.columns = [clean_column_name(c) for c in df.columns]
+                    cols = "".join(df.columns)
+                    if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
+                        if len(df) > max_rows:
+                            max_rows = len(df)
+                            current_best_df = df.copy()
+                
+                print(f"   第 {attempt+1} 次檢查: 最大表格有 {max_rows} 筆資料")
+                
+                # 如果找到超過 15 筆的，代表展開成功！
+                if max_rows > 15:
+                    best_df = current_best_df
+                    print(f"🌟 成功！抓取代號為 00991A 的完整清單 ({max_rows} 筆)")
+                    break
+                
+                # 否則暫存這個 10 筆的，繼續等
+                if max_rows > 0:
+                    best_df = current_best_df
+                
+                time.sleep(2)
+                
+            except: pass
 
+        # 4. 處理抓到的資料
         if not best_df.empty:
-            if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
-            if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
+            # 欄位對應
+            rename_map = {}
+            for c in best_df.columns:
+                if "代號" in c: rename_map[c] = "股票代號"
+                elif "名稱" in c: rename_map[c] = "股票名稱"
+                elif "股數" in c or "庫存" in c: rename_map[c] = "持有股數"
+                elif "權重" in c or "比例" in c: rename_map[c] = "權重"
             
-            best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
-            best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
+            best_df = best_df.rename(columns=rename_map)
             
-            # 如果還是只抓到 10 筆，可能是 click 真的失敗，但我們盡力了
-            save_to_csv("00991A", best_df)
+            if "股票名稱" in best_df.columns and "權重" in best_df.columns:
+                if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
+                if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
+                
+                best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
+                best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
+                save_to_csv("00991A", best_df)
+            else:
+                print("❌ [00991A] 表格欄位不符")
         else:
-            print("❌ [00991A] 找不到任何有效表格")
+            print("❌ [00991A] 找不到任何表格")
 
     except Exception as e:
         print(f"❌ [00991A] 錯誤: {e}")
