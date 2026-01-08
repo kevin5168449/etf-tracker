@@ -136,56 +136,59 @@ def update_00981A():
     return count
 
 # ==========================================
-# 00980A: 野村臺灣智慧優選 (新加入!)
+# 00980A: 野村臺灣智慧優選 (V11 強力點擊版)
 # ==========================================
 def update_00980A():
     print(f"\n🚀 [00980A] 啟動爬蟲：野村投信 (00980A)...")
-    # 野村通常有專屬的基金代號頁面
     url = "https://www.nomurafunds.com.tw/ETFWEB/product-description?fundNo=00980A"
     driver = get_driver()
     count = 0
-    
     try:
         driver.get(url)
-        time.sleep(5)
+        time.sleep(8)
         
-        # 1. 嘗試先捲動頁面，讓可能的區塊載入
+        # 1. 暴力捲動
+        print("🔄 正在捲動頁面喚醒元素...")
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        time.sleep(2)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        
+        # 2. 尋找並點擊分頁
+        print("👆 檢查分頁標籤...")
         try:
-             driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-             time.sleep(2)
-        except: pass
-
-        # 2. 尋找並點擊「持股權重」或「成分股」分頁 (有些版型需要點 Tab)
-        try:
-            tabs = driver.find_elements(By.XPATH, "//*[contains(text(),'持股權重') or contains(text(),'成分股')]")
+            tabs = driver.find_elements(By.XPATH, "//*[contains(text(),'持股') or contains(text(),'成分')]")
             for tab in tabs:
-                if tab.is_displayed():
-                    print(f"👆 點擊分頁：{tab.text}")
-                    tab.click()
-                    time.sleep(2)
+                if tab.is_displayed() and tab.tag_name in ['a', 'li', 'span', 'div']:
+                    driver.execute_script("arguments[0].click();", tab)
+                    time.sleep(3)
                     break
         except: pass
 
-        # 3. 尋找「顯示更多」或「完整清單」按鈕
+        # 3. 強力尋找「更多」按鈕
         print("👆 尋找「更多/展開」按鈕...")
         try:
-            xpath = "//*[contains(text(),'更多') or contains(text(),'顯示全部') or contains(text(),'All') or contains(text(),'完整清單')]"
-            buttons = driver.find_elements(By.XPATH, xpath)
-            clicked = False
-            for btn in buttons:
-                if btn.is_displayed():
+            css_selectors = [".more", ".btn-more", ".read-more", "a[href*='javascript']", "button"]
+            keywords = ["更多", "顯示全部", "All", "完整", "More"]
+            potential_btns = []
+            for css in css_selectors: potential_btns.extend(driver.find_elements(By.CSS_SELECTOR, css))
+            
+            for btn in potential_btns:
+                if not btn.is_displayed(): continue
+                if any(k in btn.text.strip() for k in keywords):
+                    print(f"   🎯 鎖定按鈕：'{btn.text}'")
                     driver.execute_script("arguments[0].click();", btn)
                     time.sleep(1)
                     try: ActionChains(driver).move_to_element(btn).click().perform()
                     except: pass
-                    clicked = True
+                    time.sleep(3)
                     break
         except: pass
 
-        # 4. 貪婪抓取：找最大的表格
-        print("⏳ 等待資料載入...")
+        # 4. 貪婪抓取
+        print("⏳ 等待資料表格載入...")
         best_df = pd.DataFrame()
-        for _ in range(10): # 嘗試 10 次
+        for attempt in range(15): 
             try:
                 html = driver.page_source
                 dfs = pd.read_html(html)
@@ -194,16 +197,15 @@ def update_00980A():
                 for df in dfs:
                     df.columns = [clean_column_name(c) for c in df.columns]
                     cols = "".join(df.columns)
-                    # 野村欄位通常包含：股票名稱、權重、股數
                     if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
                         if len(df) > max_rows:
                             max_rows = len(df)
                             current_best = df.copy()
                 
-                print(f"   檢查中...最大表格有 {max_rows} 筆")
+                print(f"   檢查中 (第 {attempt+1} 次)... 最大表格有 {max_rows} 筆")
                 if max_rows > 15:
                     best_df = current_best
-                    print(f"🌟 抓到完整清單：{max_rows} 筆")
+                    print(f"🌟 成功！抓到完整清單：{max_rows} 筆")
                     break
                 if max_rows > 0: best_df = current_best
                 time.sleep(2)
@@ -224,19 +226,15 @@ def update_00980A():
                 if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
                 
                 best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
-                # 清洗
+                # 全面清洗
                 for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
                 
                 best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
                 count = save_to_csv("00980A", best_df)
             else: print("❌ [00980A] 表格欄位不符")
-        else:
-            print("❌ [00980A] 找不到表格")
-
-    except Exception as e:
-        print(f"❌ [00980A] 錯誤: {e}")
-    finally:
-        driver.quit()
+        else: print("❌ [00980A] 找不到表格")
+    except Exception as e: print(f"❌ [00980A] 錯誤: {e}")
+    finally: driver.quit()
     return count
 
 # ==========================================
@@ -327,7 +325,7 @@ if __name__ == "__main__":
     print("=== 開始自動更新 ===")
     c1 = update_00981A()
     c2 = update_00991A()
-    c3 = update_00980A() # 執行新加入的野村
+    c3 = update_00980A()
     
     today = get_taiwan_date()
     msg = f"📢 **{today} ETF 持股更新報告**\n"
