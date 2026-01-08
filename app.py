@@ -6,11 +6,25 @@ import os
 # --- 設定網頁 ---
 st.set_page_config(page_title="ETF 經理人操盤戰情室", layout="wide", page_icon="🦁")
 
-# CSS 美化：調整字體與 Metric 樣式
+# --- CSS 美化：緊湊表格與靠右對齊 ---
 st.markdown("""
 <style>
+    /* 1. 調整 Metric 數字大小 */
     div[data-testid="stMetricValue"] { font-size: 24px; }
-    .big-font { font-size:18px !important; font-weight: bold; }
+    
+    /* 2. 表格緊湊化：減少內邊距 */
+    div[data-testid="stDataFrame"] td {
+        padding-top: 4px !important;
+        padding-bottom: 4px !important;
+        font-size: 14px;
+    }
+    div[data-testid="stDataFrame"] th {
+        padding-top: 4px !important;
+        padding-bottom: 4px !important;
+    }
+
+    /* 3. 強制表格文字靠右 (針對數字欄位更美觀) */
+    .dataframe { text-align: right !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -83,54 +97,57 @@ def show_dashboard(etf_code, etf_name):
     new_entries = merged[(merged['持有股數_昨'] == 0) & (merged['持有股數_今'] > 0)]
     exits = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] == 0)]
     
-    # 排除新進/剔除，只看既有持股的加減碼
     holding_changes = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] > 0)].copy()
     increases = holding_changes[holding_changes['股數增減'] > 0].sort_values('股數增減', ascending=False)
     decreases = holding_changes[holding_changes['股數增減'] < 0].sort_values('股數增減', ascending=True)
 
-    # --- 2. 戰情儀表板 (四大天王) ---
+    # --- 2. 戰情儀表板 ---
     st.markdown(f"### 🗓️ {date_curr} vs {date_base} 操盤重點")
     
-    # 使用 2x2 排版，左邊是「買進訊號」，右邊是「賣出訊號」
     c1, c2 = st.columns(2)
     
     with c1:
         st.info("📈 **買進訊號 (Bullish)**")
         sub_c1, sub_c2 = st.columns(2)
-        with sub_c1:
-            st.metric("✨ 新進檔數", f"{len(new_entries)}", delta_color="normal")
-        with sub_c2:
-            st.metric("🔴 加碼檔數", f"{len(increases)}", delta_color="normal")
-            
-        # 新進榜表格
+        with sub_c1: st.metric("✨ 新進檔數", f"{len(new_entries)}", delta_color="normal")
+        with sub_c2: st.metric("🔴 加碼檔數", f"{len(increases)}", delta_color="normal")
+        
         if not new_entries.empty:
             st.markdown("**✨ 新進榜**")
-            st.dataframe(new_entries[['股票名稱', '權重_今', '持有股數_今']], hide_index=True, use_container_width=True)
+            # 靠右對齊樣式
+            st.dataframe(
+                new_entries[['股票名稱', '權重_今', '持有股數_今']].style.format({'權重_今': '{:.2f}%', '持有股數_今': '{:,.0f}'}).set_properties(**{'text-align': 'right'}),
+                hide_index=True, use_container_width=True
+            )
         
-        # 加碼榜表格 (Top 5)
         if not increases.empty:
             st.markdown("**🔴 重點加碼 (Top 5)**")
             top_inc = increases.head(5)[['股票名稱', '股數增減', '權重_今']]
-            st.dataframe(top_inc.style.format({'股數增減': '+{:,.0f}'}), hide_index=True, use_container_width=True)
+            st.dataframe(
+                top_inc.style.format({'股數增減': '+{:,.0f}', '權重_今': '{:.2f}%'}).set_properties(**{'text-align': 'right'}),
+                hide_index=True, use_container_width=True
+            )
 
     with c2:
         st.error("📉 **賣出訊號 (Bearish)**")
         sub_c3, sub_c4 = st.columns(2)
-        with sub_c3:
-            st.metric("❌ 剔除檔數", f"{len(exits)}", delta_color="inverse")
-        with sub_c4:
-            st.metric("🟢 減碼檔數", f"{len(decreases)}", delta_color="inverse")
+        with sub_c3: st.metric("❌ 剔除檔數", f"{len(exits)}", delta_color="inverse")
+        with sub_c4: st.metric("🟢 減碼檔數", f"{len(decreases)}", delta_color="inverse")
             
-        # 剔除榜表格
         if not exits.empty:
             st.markdown("**❌ 剔除榜**")
-            st.dataframe(exits[['股票名稱', '權重_昨', '持有股數_昨']], hide_index=True, use_container_width=True)
+            st.dataframe(
+                exits[['股票名稱', '權重_昨', '持有股數_昨']].style.format({'權重_昨': '{:.2f}%', '持有股數_昨': '{:,.0f}'}).set_properties(**{'text-align': 'right'}),
+                hide_index=True, use_container_width=True
+            )
             
-        # 減碼榜表格 (Top 5)
         if not decreases.empty:
             st.markdown("**🟢 重點減碼 (Top 5)**")
             top_dec = decreases.head(5)[['股票名稱', '股數增減', '權重_今']]
-            st.dataframe(top_dec.style.format({'股數增減': '{:,.0f}'}), hide_index=True, use_container_width=True)
+            st.dataframe(
+                top_dec.style.format({'股數增減': '{:,.0f}', '權重_今': '{:.2f}%'}).set_properties(**{'text-align': 'right'}),
+                hide_index=True, use_container_width=True
+            )
 
     st.divider()
 
@@ -152,21 +169,21 @@ def show_dashboard(etf_code, etf_name):
     else:
         st.info("尚無資料")
 
-    # --- 4. 完整持股異動表 ---
-    st.subheader("📋 完整持股異動明細")
+    # --- 4. 完整持股異動表 (優化版) ---
+    st.subheader("📋 完整持股異動明細 (依權重排序)")
     
-    # 整理顯示欄位與名稱
     show_df = merged[['股票代號', '股票名稱', '持有股數_今', '股數增減', '權重_今', '權重增減']].copy()
     show_df.columns = ['代號', '名稱', '目前持股 (股)', '持股增減 (股)', '權重 (%)', '權重變化 (%)']
     
-    # 排序：優先顯示「動作大」的 (絕對值排序)
-    show_df = show_df.iloc[show_df['持股增減 (股)'].abs().argsort()[::-1]]
+    # ★★★ 修改點：依「權重 (%)」由大到小排序 ★★★
+    show_df = show_df.sort_values(by='權重 (%)', ascending=False)
 
     # 樣式設定
     def highlight_change(val):
         color = '#ffcccc' if val > 0 else '#ccffcc' if val < 0 else ''
         return f'background-color: {color}'
 
+    # ★★★ 修改點：加入 .set_properties(**{'text-align': 'right'}) 強制靠右 ★★★
     st.dataframe(
         show_df.style.map(highlight_change, subset=['持股增減 (股)', '權重變化 (%)'])
                      .format({
@@ -174,10 +191,11 @@ def show_dashboard(etf_code, etf_name):
                          '持股增減 (股)': '{:+,.0f}', 
                          '權重 (%)': '{:.2f}', 
                          '權重變化 (%)': '{:+.2f}'
-                     }),
+                     })
+                     .set_properties(**{'text-align': 'right'}), # 強制內容靠右
         use_container_width=True,
-        hide_index=True, # ★★★ 這裡隱藏了最前面的怪數字
-        height=600
+        hide_index=True, 
+        height=800 # 拉長表格高度，看更多資料
     )
 
 # --- 主程式：分頁 ---
