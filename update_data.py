@@ -74,59 +74,43 @@ def clean_cell_data(val):
     return s
 
 # ==========================================
-# 00981A: 統一台股增長主動式ETF基金
+# 00981A: 統一台股增長 (選單選取版)
 # ==========================================
 def update_00981A():
-    # ★★★ 設定正確的中文名稱 ★★★
-    TARGET_NAME = "統一台股增長主動式ETF基金"  # <-- 請確認這跟官網選單上的字完全一樣，如果不確定，可用關鍵字如 "台股增長"
-    
+    TARGET_NAME = "統一台股增長主動式ETF基金" 
     print(f"\n🚀 [00981A] 啟動爬蟲：統一投信...")
     url = "https://www.ezmoney.com.tw/ETF/Transaction/PCF"
     driver = get_driver()
     count = 0
-    
     try:
         driver.get(url)
         time.sleep(5)
-        
-        # --- 步驟 1: 切換選單 ---
-        print(f"👆 正在尋找基金：{TARGET_NAME}...")
+        # 切換選單
+        print(f"👆 尋找基金：{TARGET_NAME}...")
         found = False
         try:
-            # 找到頁面上所有下拉選單
             selects = driver.find_elements(By.TAG_NAME, "select")
             for el in selects:
                 try:
                     select = Select(el)
-                    # 遍歷選項找目標
                     for opt in select.options:
-                        # 使用模糊比對，只要包含關鍵字就選
                         if "台股增長" in opt.text and "主動" in opt.text:
                             print(f"🎯 找到目標：{opt.text}")
                             select.select_by_visible_text(opt.text)
                             found = True
-                            time.sleep(5) # 等待重新載入
+                            time.sleep(5)
                             break
                 except: pass
                 if found: break
-            
-            if not found:
-                print("⚠️ 警告：選單中找不到該基金，將抓取預設值。")
-                # 印出所有選項供除錯
-                if selects:
-                    print("可選基金列表:", [o.text for o in Select(selects[0]).options][:5], "...")
-        except Exception as e:
-            print(f"⚠️ 選單切換失敗: {e}")
+            if not found: print("⚠️ 警告：選單中找不到該基金，將抓取預設值。")
+        except: pass
 
-        # --- 步驟 2: 抓取表格 ---
         html = driver.page_source
         dfs = pd.read_html(html)
         target_df = pd.DataFrame()
-        
         for df in dfs:
             df.columns = [clean_column_name(c) for c in df.columns]
             cols = "".join(df.columns)
-            
             if ("代號" in cols or "名稱" in cols) and ("權重" in cols or "比重" in cols):
                 rename_map = {}
                 for c in df.columns:
@@ -134,47 +118,30 @@ def update_00981A():
                     elif "名稱" in c: rename_map[c] = "股票名稱"
                     elif "股數" in c: rename_map[c] = "持有股數"
                     elif "權重" in c or "比重" in c: rename_map[c] = "權重"
-                
                 df = df.rename(columns=rename_map)
                 if "股票名稱" in df.columns and "權重" in df.columns:
                     target_df = df.copy()
                     if "股票代號" not in target_df.columns: target_df["股票代號"] = target_df["股票名稱"]
                     if "持有股數" not in target_df.columns: target_df["持有股數"] = 0
                     break
-        
         if not target_df.empty:
             target_df = target_df[['股票代號', '股票名稱', '持有股數', '權重']]
-            # 全面清洗
-            for col in target_df.columns:
-                target_df[col] = target_df[col].apply(clean_cell_data)
-                
+            for col in target_df.columns: target_df[col] = target_df[col].apply(clean_cell_data)
             target_df['持有股數'] = target_df['持有股數'].astype(str).str.replace(',', '').str.replace('--', '0')
             target_df['權重'] = target_df['權重'].astype(str).str.replace('%', '')
             count = save_to_csv("00981A", target_df)
-        else:
-            print("❌ [00981A] 找不到表格")
-
-    except Exception as e:
-        print(f"❌ [00981A] 錯誤: {e}")
-    finally:
-        driver.quit()
+        else: print("❌ [00981A] 找不到表格")
+    except Exception as e: print(f"❌ [00981A] 錯誤: {e}")
+    finally: driver.quit()
     return count
 
 # ==========================================
-# 00991A: 復華未來50 (主動復華未來50)
+# 00980A: 野村臺灣智慧優選 (新加入!)
 # ==========================================
-def update_00991A():
-    # ★★★ 設定正確的中文名稱 ★★★
-    # 復華網址通常是直接帶入參數，或者要選單
-    # 這裡我們使用通用的復華 PCF 頁面，然後嘗試選單
-    TARGET_NAME = "復華未來50" # 請確認關鍵字
-    
-    print(f"\n🚀 [00991A] 啟動爬蟲：復華投信 ({TARGET_NAME})...")
-    # 復華主動式 ETF 列表頁面
-    url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold" 
-    # 註：復華的網址通常是固定的 (ETFxx)，如果不確定 00991A 對應哪個 ID
-    # 建議先用上面這個通用頁面，然後看能不能選
-    
+def update_00980A():
+    print(f"\n🚀 [00980A] 啟動爬蟲：野村投信 (00980A)...")
+    # 野村通常有專屬的基金代號頁面
+    url = "https://www.nomurafunds.com.tw/ETFWEB/product-description?fundNo=00980A"
     driver = get_driver()
     count = 0
     
@@ -182,23 +149,29 @@ def update_00991A():
         driver.get(url)
         time.sleep(5)
         
-        # --- 步驟 1: 嘗試切換基金 (如果網頁有提供切換) ---
-        # 復華的頁面結構比較複雜，有些是上方有 Tab 或 Dropdown
-        # 如果是單一頁面網址，則不需要切換。
-        # 假設 00991A 有獨立網址，請在此替換 url
-        
-        # --- 步驟 2: 點擊展開 (維持之前成功的邏輯) ---
+        # 1. 嘗試先捲動頁面，讓可能的區塊載入
         try:
-            target_div = driver.find_element(By.ID, "stockhold")
-            driver.execute_script("arguments[0].scrollIntoView(true);", target_div)
-            time.sleep(2)
+             driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+             time.sleep(2)
         except: pass
 
-        print("👆 尋找「更多」按鈕...")
-        clicked = False
+        # 2. 尋找並點擊「持股權重」或「成分股」分頁 (有些版型需要點 Tab)
         try:
-            xpath = "//*[contains(text(),'更多') or contains(text(),'展開') or contains(text(),'查閱全部')]"
+            tabs = driver.find_elements(By.XPATH, "//*[contains(text(),'持股權重') or contains(text(),'成分股')]")
+            for tab in tabs:
+                if tab.is_displayed():
+                    print(f"👆 點擊分頁：{tab.text}")
+                    tab.click()
+                    time.sleep(2)
+                    break
+        except: pass
+
+        # 3. 尋找「顯示更多」或「完整清單」按鈕
+        print("👆 尋找「更多/展開」按鈕...")
+        try:
+            xpath = "//*[contains(text(),'更多') or contains(text(),'顯示全部') or contains(text(),'All') or contains(text(),'完整清單')]"
             buttons = driver.find_elements(By.XPATH, xpath)
+            clicked = False
             for btn in buttons:
                 if btn.is_displayed():
                     driver.execute_script("arguments[0].click();", btn)
@@ -209,7 +182,94 @@ def update_00991A():
                     break
         except: pass
 
-        # --- 步驟 3: 驗收等待 ---
+        # 4. 貪婪抓取：找最大的表格
+        print("⏳ 等待資料載入...")
+        best_df = pd.DataFrame()
+        for _ in range(10): # 嘗試 10 次
+            try:
+                html = driver.page_source
+                dfs = pd.read_html(html)
+                current_best = pd.DataFrame()
+                max_rows = 0
+                for df in dfs:
+                    df.columns = [clean_column_name(c) for c in df.columns]
+                    cols = "".join(df.columns)
+                    # 野村欄位通常包含：股票名稱、權重、股數
+                    if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
+                        if len(df) > max_rows:
+                            max_rows = len(df)
+                            current_best = df.copy()
+                
+                print(f"   檢查中...最大表格有 {max_rows} 筆")
+                if max_rows > 15:
+                    best_df = current_best
+                    print(f"🌟 抓到完整清單：{max_rows} 筆")
+                    break
+                if max_rows > 0: best_df = current_best
+                time.sleep(2)
+            except: pass
+
+        if not best_df.empty:
+            rename_map = {}
+            for c in best_df.columns:
+                if "代號" in c: rename_map[c] = "股票代號"
+                elif "名稱" in c: rename_map[c] = "股票名稱"
+                elif "股數" in c or "單位" in c: rename_map[c] = "持有股數"
+                elif "權重" in c or "比例" in c: rename_map[c] = "權重"
+            
+            best_df = best_df.rename(columns=rename_map)
+            
+            if "股票名稱" in best_df.columns:
+                if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
+                if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
+                
+                best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
+                # 清洗
+                for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
+                
+                best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
+                count = save_to_csv("00980A", best_df)
+            else: print("❌ [00980A] 表格欄位不符")
+        else:
+            print("❌ [00980A] 找不到表格")
+
+    except Exception as e:
+        print(f"❌ [00980A] 錯誤: {e}")
+    finally:
+        driver.quit()
+    return count
+
+# ==========================================
+# 00991A: 復華未來50
+# ==========================================
+def update_00991A():
+    TARGET_NAME = "復華未來50"
+    print(f"\n🚀 [00991A] 啟動爬蟲：復華投信 ({TARGET_NAME})...")
+    url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold" 
+    driver = get_driver()
+    count = 0
+    try:
+        driver.get(url)
+        time.sleep(5)
+        try:
+            target_div = driver.find_element(By.ID, "stockhold")
+            driver.execute_script("arguments[0].scrollIntoView(true);", target_div)
+            time.sleep(2)
+        except: pass
+
+        print("👆 尋找「更多」按鈕...")
+        try:
+            xpath = "//*[contains(text(),'更多') or contains(text(),'展開') or contains(text(),'查閱全部')]"
+            buttons = driver.find_elements(By.XPATH, xpath)
+            for btn in buttons:
+                if btn.is_displayed():
+                    driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(1)
+                    try: ActionChains(driver).move_to_element(btn).click().perform()
+                    except: pass
+                    break
+        except: pass
+
         print("⏳ 等待資料載入...")
         best_df = pd.DataFrame()
         for _ in range(10):
@@ -225,7 +285,6 @@ def update_00991A():
                         if len(df) > max_rows:
                             max_rows = len(df)
                             current_best = df.copy()
-                
                 if max_rows > 15:
                     best_df = current_best
                     print(f"🌟 抓到完整清單：{max_rows} 筆")
@@ -241,26 +300,17 @@ def update_00991A():
                 elif "名稱" in c: rename_map[c] = "股票名稱"
                 elif "股數" in c: rename_map[c] = "持有股數"
                 elif "權重" in c or "比例" in c: rename_map[c] = "權重"
-            
             best_df = best_df.rename(columns=rename_map)
             if "股票名稱" in best_df.columns:
                 if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
                 if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
-                
                 best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
-                # 全面清洗
-                for col in best_df.columns:
-                    best_df[col] = best_df[col].apply(clean_cell_data)
-                
+                for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
                 best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
                 count = save_to_csv("00991A", best_df)
-        else:
-            print("❌ [00991A] 找不到表格")
-
-    except Exception as e:
-        print(f"❌ [00991A] 錯誤: {e}")
-    finally:
-        driver.quit()
+        else: print("❌ [00991A] 找不到表格")
+    except Exception as e: print(f"❌ [00991A] 錯誤: {e}")
+    finally: driver.quit()
     return count
 
 # ==========================================
@@ -277,11 +327,13 @@ if __name__ == "__main__":
     print("=== 開始自動更新 ===")
     c1 = update_00981A()
     c2 = update_00991A()
+    c3 = update_00980A() # 執行新加入的野村
     
     today = get_taiwan_date()
     msg = f"📢 **{today} ETF 持股更新報告**\n"
     msg += f"✅ **00981A (統一)**: 更新 {c1} 筆\n" if c1 > 0 else f"⚠️ **00981A**: 失敗\n"
     msg += f"✅ **00991A (復華)**: 更新 {c2} 筆\n" if c2 > 0 else f"⚠️ **00991A**: 失敗\n"
+    msg += f"✅ **00980A (野村)**: 更新 {c3} 筆\n" if c3 > 0 else f"⚠️ **00980A**: 失敗\n"
     
     send_discord_notify(msg)
     print("=== 更新結束 ===")
