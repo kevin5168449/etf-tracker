@@ -6,11 +6,11 @@ import os
 # --- 設定網頁 ---
 st.set_page_config(page_title="ETF 經理人操盤戰情室", layout="wide", page_icon="🦁")
 
-# CSS 美化：讓 Metric 卡片更好看
+# CSS 美化：調整字體與 Metric 樣式
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] { font-size: 24px; }
-    .big-font { font-size:20px !important; font-weight: bold; }
+    .big-font { font-size:18px !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -27,7 +27,7 @@ def load_data(etf_code):
         df['權重'] = pd.to_numeric(df['權重'], errors='coerce').fillna(0)
         df['持有股數'] = df['持有股數'].astype(str).str.replace(',', '').str.replace('--', '0')
         df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
-        # 過濾掉垃圾資料 (例如"查看更多")
+        # 過濾掉垃圾資料
         df = df[~df['股票名稱'].str.contains('查看更多|更多', na=False)]
         return df.sort_values(by='Date', ascending=False)
     return None
@@ -49,7 +49,7 @@ def get_comparison(df, current_date, base_date):
     merged['股數增減'] = merged['持有股數_今'] - merged['持有股數_昨']
     merged['權重增減'] = merged['權重_今'] - merged['權重_昨']
     
-    # 補回名稱 (若剔除，今日名稱會是 0)
+    # 補回名稱
     for idx, row in merged.iterrows():
         if row['股票名稱'] == 0:
             old_name = df_base[df_base['股票代號'] == row['股票代號']]['股票名稱'].values
@@ -57,14 +57,14 @@ def get_comparison(df, current_date, base_date):
             
     return merged
 
-# --- 顯示單一 ETF 儀表板 ---
+# --- 顯示儀表板 ---
 def show_dashboard(etf_code, etf_name):
     df = load_data(etf_code)
     if df is None:
         st.error(f"⚠️ {etf_code} 尚未有資料。")
         return
 
-    # --- 1. 側邊欄：日期選擇 (全域控制) ---
+    # --- 1. 側邊欄：日期選擇 ---
     all_dates = df['Date'].dt.date.unique()
     if len(all_dates) < 1:
         st.warning("資料不足。")
@@ -72,117 +72,111 @@ def show_dashboard(etf_code, etf_name):
 
     st.sidebar.header(f"📅 {etf_name} 日期設定")
     date_curr = st.sidebar.selectbox(f"{etf_code} 觀察日期", all_dates, index=0)
-    # 預設基準日期為觀察日期的前一天 (如果有的話)
     default_base_idx = 1 if len(all_dates) > 1 else 0
     date_base = st.sidebar.selectbox(f"{etf_code} 比較基準", all_dates, index=default_base_idx)
-    
     st.sidebar.markdown("---")
 
     # --- 計算數據 ---
     merged = get_comparison(df, pd.Timestamp(date_curr), pd.Timestamp(date_base))
     
-    # 找出焦點股
-    top_buy = merged.sort_values('股數增減', ascending=False).iloc[0]
-    top_sell = merged.sort_values('股數增減', ascending=True).iloc[0]
+    # 分類
     new_entries = merged[(merged['持有股數_昨'] == 0) & (merged['持有股數_今'] > 0)]
     exits = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] == 0)]
-
-    # --- 2. 戰情摘要 (Highlights) ---
-    st.markdown(f"### 🗓️ {date_curr} vs {date_base} 操盤摘要")
     
-    col1, col2, col3, col4 = st.columns(4)
-    
-    # 卡片 1: 最大加碼
-    with col1:
-        st.metric(
-            label="🔥 本日最大加碼",
-            value=top_buy['股票名稱'],
-            delta=f"+{int(top_buy['股數增減']):,}" if top_buy['股數增減'] > 0 else "無動作"
-        )
-        
-    # 卡片 2: 最大減碼
-    with col2:
-        st.metric(
-            label="🧊 本日最大減碼",
-            value=top_sell['股票名稱'],
-            delta=f"{int(top_sell['股數增減']):,}" if top_sell['股數增減'] < 0 else "無動作",
-            delta_color="inverse"
-        )
-        
-    # 卡片 3: 新進榜
-    with col3:
-        st.metric(
-            label="✨ 新進檔數",
-            value=f"{len(new_entries)} 檔",
-            delta="點擊下方查看" if not new_entries.empty else "無"
-        )
+    # 排除新進/剔除，只看既有持股的加減碼
+    holding_changes = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] > 0)].copy()
+    increases = holding_changes[holding_changes['股數增減'] > 0].sort_values('股數增減', ascending=False)
+    decreases = holding_changes[holding_changes['股數增減'] < 0].sort_values('股數增減', ascending=True)
 
-    # 卡片 4: 剔除榜
-    with col4:
-        st.metric(
-            label="❌ 剔除檔數",
-            value=f"{len(exits)} 檔",
-            delta="點擊下方查看" if not exits.empty else "無",
-            delta_color="inverse"
-        )
+    # --- 2. 戰情儀表板 (四大天王) ---
+    st.markdown(f"### 🗓️ {date_curr} vs {date_base} 操盤重點")
+    
+    # 使用 2x2 排版，左邊是「買進訊號」，右邊是「賣出訊號」
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.info("📈 **買進訊號 (Bullish)**")
+        sub_c1, sub_c2 = st.columns(2)
+        with sub_c1:
+            st.metric("✨ 新進檔數", f"{len(new_entries)}", delta_color="normal")
+        with sub_c2:
+            st.metric("🔴 加碼檔數", f"{len(increases)}", delta_color="normal")
+            
+        # 新進榜表格
+        if not new_entries.empty:
+            st.markdown("**✨ 新進榜**")
+            st.dataframe(new_entries[['股票名稱', '權重_今', '持有股數_今']], hide_index=True, use_container_width=True)
+        
+        # 加碼榜表格 (Top 5)
+        if not increases.empty:
+            st.markdown("**🔴 重點加碼 (Top 5)**")
+            top_inc = increases.head(5)[['股票名稱', '股數增減', '權重_今']]
+            st.dataframe(top_inc.style.format({'股數增減': '+{:,.0f}'}), hide_index=True, use_container_width=True)
+
+    with c2:
+        st.error("📉 **賣出訊號 (Bearish)**")
+        sub_c3, sub_c4 = st.columns(2)
+        with sub_c3:
+            st.metric("❌ 剔除檔數", f"{len(exits)}", delta_color="inverse")
+        with sub_c4:
+            st.metric("🟢 減碼檔數", f"{len(decreases)}", delta_color="inverse")
+            
+        # 剔除榜表格
+        if not exits.empty:
+            st.markdown("**❌ 剔除榜**")
+            st.dataframe(exits[['股票名稱', '權重_昨', '持有股數_昨']], hide_index=True, use_container_width=True)
+            
+        # 減碼榜表格 (Top 5)
+        if not decreases.empty:
+            st.markdown("**🟢 重點減碼 (Top 5)**")
+            top_dec = decreases.head(5)[['股票名稱', '股數增減', '權重_今']]
+            st.dataframe(top_dec.style.format({'股數增減': '{:,.0f}'}), hide_index=True, use_container_width=True)
 
     st.divider()
 
-    # --- 3. 資金熱力圖 (最直觀的視覺) ---
+    # --- 3. 資金熱力圖 ---
     st.subheader("🗺️ 資金流向熱力圖")
-    st.caption("方塊越大=權重越重 | 顏色越紅=加碼越多 | 顏色越綠=減碼越多")
-    
-    # 過濾掉權重為 0 的 (已剔除無法畫圖)
     map_data = merged[merged['權重_今'] > 0].copy()
-    
     if not map_data.empty:
         fig = px.treemap(
             map_data,
             path=['股票名稱'],
             values='權重_今',
             color='股數增減',
-            color_continuous_scale=['#00aa00', '#ffffff', '#ff0000'], # 綠-白-紅
+            color_continuous_scale=['#00aa00', '#ffffff', '#ff0000'],
             color_continuous_midpoint=0,
             hover_data=['股票代號', '股數增減', '權重_今']
         )
         fig.update_traces(textinfo="label+value+percent entry")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("尚無足夠持股資料繪製熱力圖")
+        st.info("尚無資料")
 
-    # --- 4. 分類詳細清單 ---
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.subheader("✨ 新進榜 (New)")
-        if not new_entries.empty:
-            st.dataframe(new_entries[['股票名稱', '權重_今', '持有股數_今']], use_container_width=True)
-        else:
-            st.info("無")
-            
-    with c2:
-        st.subheader("❌ 剔除榜 (Removed)")
-        if not exits.empty:
-            st.dataframe(exits[['股票名稱', '權重_昨', '持有股數_昨']], use_container_width=True)
-        else:
-            st.info("無")
-
-    # --- 5. 完整持股異動表 ---
+    # --- 4. 完整持股異動表 ---
     st.subheader("📋 完整持股異動明細")
     
-    # 格式化顯示 (隱藏 Date, 加入顏色)
+    # 整理顯示欄位與名稱
+    show_df = merged[['股票代號', '股票名稱', '持有股數_今', '股數增減', '權重_今', '權重增減']].copy()
+    show_df.columns = ['代號', '名稱', '目前持股 (股)', '持股增減 (股)', '權重 (%)', '權重變化 (%)']
+    
+    # 排序：優先顯示「動作大」的 (絕對值排序)
+    show_df = show_df.iloc[show_df['持股增減 (股)'].abs().argsort()[::-1]]
+
+    # 樣式設定
     def highlight_change(val):
         color = '#ffcccc' if val > 0 else '#ccffcc' if val < 0 else ''
         return f'background-color: {color}'
 
-    # 選擇顯示欄位
-    show_df = merged[['股票代號', '股票名稱', '持有股數_今', '股數增減', '權重_今', '權重增減']].copy()
-    show_df = show_df.sort_values(by='權重_今', ascending=False) # 預設依權重排序
-
     st.dataframe(
-        show_df.style.map(highlight_change, subset=['股數增減', '權重增減'])
-                     .format({'持有股數_今': '{:,.0f}', '股數增減': '{:+,.0f}', '權重_今': '{:.2f}', '權重增減': '{:+.2f}'}),
+        show_df.style.map(highlight_change, subset=['持股增減 (股)', '權重變化 (%)'])
+                     .format({
+                         '目前持股 (股)': '{:,.0f}', 
+                         '持股增減 (股)': '{:+,.0f}', 
+                         '權重 (%)': '{:.2f}', 
+                         '權重變化 (%)': '{:+.2f}'
+                     }),
         use_container_width=True,
+        hide_index=True, # ★★★ 這裡隱藏了最前面的怪數字
         height=600
     )
 
