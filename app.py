@@ -1,47 +1,47 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
-# --- 設定網頁標題 ---
-st.set_page_config(page_title="ETF 主動式戰情室", layout="wide")
-st.title("🦁 主動式 ETF 經理人操盤戰情室")
-st.markdown("### 追蹤經理人的每一步棋：新進、剔除、加減碼")
+# --- 設定網頁 ---
+st.set_page_config(page_title="ETF 經理人操盤戰情室", layout="wide", page_icon="🦁")
 
-# --- 讀取資料函式 ---
+# CSS 美化：讓 Metric 卡片更好看
+st.markdown("""
+<style>
+    div[data-testid="stMetricValue"] { font-size: 24px; }
+    .big-font { font-size:20px !important; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🦁 主動式 ETF 經理人操盤戰情室")
+
+# --- 讀取資料 ---
 def load_data(etf_code):
     file_path = f"data/{etf_code}_history.csv"
     if os.path.exists(file_path):
         df = pd.read_csv(file_path)
         df['Date'] = pd.to_datetime(df['Date'])
-        # 清洗數據：轉為數值
+        # 數據清洗
         df['權重'] = df['權重'].astype(str).str.replace('%', '')
         df['權重'] = pd.to_numeric(df['權重'], errors='coerce').fillna(0)
         df['持有股數'] = df['持有股數'].astype(str).str.replace(',', '').str.replace('--', '0')
         df['持有股數'] = pd.to_numeric(df['持有股數'], errors='coerce').fillna(0)
-        return df
+        # 過濾掉垃圾資料 (例如"查看更多")
+        df = df[~df['股票名稱'].str.contains('查看更多|更多', na=False)]
+        return df.sort_values(by='Date', ascending=False)
     return None
 
-# --- 核心邏輯：計算異動 ---
-def calculate_changes(df):
-    dates = df['Date'].sort_values(ascending=False).unique()
-    if len(dates) < 2:
-        return df[df['Date'] == dates[0]].copy(), None, dates[0]
+# --- 計算異動邏輯 ---
+def get_comparison(df, current_date, base_date):
+    df_curr = df[df['Date'] == current_date].copy()
+    df_base = df[df['Date'] == base_date].copy()
     
-    today = dates[0]
-    yesterday = dates[1]
-    
-    df_today = df[df['Date'] == today].copy()
-    df_yesterday = df[df['Date'] == yesterday].copy()
-    
-    # 合併比較
+    # 合併
     merged = pd.merge(
-        df_today[['股票代號', '股票名稱', '持有股數', '權重']],
-        df_yesterday[['股票代號', '持有股數', '權重']],
-        on='股票代號',
-        how='outer',
-        suffixes=('_今', '_昨')
+        df_curr[['股票代號', '股票名稱', '持有股數', '權重']],
+        df_base[['股票代號', '持有股數', '權重']],
+        on='股票代號', how='outer', suffixes=('_今', '_昨')
     )
     merged = merged.fillna(0)
     
@@ -49,131 +49,149 @@ def calculate_changes(df):
     merged['股數增減'] = merged['持有股數_今'] - merged['持有股數_昨']
     merged['權重增減'] = merged['權重_今'] - merged['權重_昨']
     
-    # 定義動作標籤
-    def classify_action(row):
-        if row['持有股數_昨'] == 0 and row['持有股數_今'] > 0: return '✨ 新進榜'
-        if row['持有股數_昨'] > 0 and row['持有股數_今'] == 0: return '❌ 已剔除'
-        if row['股數增減'] > 0: return '🔴 加碼'
-        if row['股數增減'] < 0: return '🟢 減碼'
-        return '⚪ 持平'
-
-    merged['動作'] = merged.apply(classify_action, axis=1)
-    
-    # 補回名稱 (針對剔除的股票，名稱可能會是 0，需要從昨天資料補)
+    # 補回名稱 (若剔除，今日名稱會是 0)
     for idx, row in merged.iterrows():
         if row['股票名稱'] == 0:
-            old_name = df_yesterday[df_yesterday['股票代號'] == row['股票代號']]['股票名稱'].values
-            if len(old_name) > 0:
-                merged.at[idx, '股票名稱'] = old_name[0]
-                
-    return df_today, merged, today
+            old_name = df_base[df_base['股票代號'] == row['股票代號']]['股票名稱'].values
+            if len(old_name) > 0: merged.at[idx, '股票名稱'] = old_name[0]
+            
+    return merged
 
-# --- 顯示儀表板函式 ---
-def show_etf_dashboard(etf_code, etf_name):
-    st.header(f"📊 {etf_name} ({etf_code})")
-    
+# --- 顯示單一 ETF 儀表板 ---
+def show_dashboard(etf_code, etf_name):
     df = load_data(etf_code)
     if df is None:
-        st.error("⚠️ 尚未有資料，請檢查爬蟲是否執行。")
+        st.error(f"⚠️ {etf_code} 尚未有資料。")
         return
 
-    latest_df, merged_df, latest_date = calculate_changes(df)
-    st.caption(f"📅 資料更新日期: {latest_date.strftime('%Y-%m-%d')}")
+    # --- 1. 側邊欄：日期選擇 (全域控制) ---
+    all_dates = df['Date'].dt.date.unique()
+    if len(all_dates) < 1:
+        st.warning("資料不足。")
+        return
 
-    # === 1. 重點摘要 (Metrics) ===
-    if merged_df is not None:
-        new_entry = merged_df[merged_df['動作'] == '✨ 新進榜']
-        exit_entry = merged_df[merged_df['動作'] == '❌ 已剔除']
+    st.sidebar.header(f"📅 {etf_name} 日期設定")
+    date_curr = st.sidebar.selectbox(f"{etf_code} 觀察日期", all_dates, index=0)
+    # 預設基準日期為觀察日期的前一天 (如果有的話)
+    default_base_idx = 1 if len(all_dates) > 1 else 0
+    date_base = st.sidebar.selectbox(f"{etf_code} 比較基準", all_dates, index=default_base_idx)
+    
+    st.sidebar.markdown("---")
+
+    # --- 計算數據 ---
+    merged = get_comparison(df, pd.Timestamp(date_curr), pd.Timestamp(date_base))
+    
+    # 找出焦點股
+    top_buy = merged.sort_values('股數增減', ascending=False).iloc[0]
+    top_sell = merged.sort_values('股數增減', ascending=True).iloc[0]
+    new_entries = merged[(merged['持有股數_昨'] == 0) & (merged['持有股數_今'] > 0)]
+    exits = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] == 0)]
+
+    # --- 2. 戰情摘要 (Highlights) ---
+    st.markdown(f"### 🗓️ {date_curr} vs {date_base} 操盤摘要")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # 卡片 1: 最大加碼
+    with col1:
+        st.metric(
+            label="🔥 本日最大加碼",
+            value=top_buy['股票名稱'],
+            delta=f"+{int(top_buy['股數增減']):,}" if top_buy['股數增減'] > 0 else "無動作"
+        )
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("持股檔數", f"{len(latest_df)}", delta=f"{len(latest_df) - len(df[df['Date']!=latest_date]['Date'].unique()) if len(df['Date'].unique())>1 else 0}")
-        c2.metric("✨ 新進檔數", f"{len(new_entry)}", delta_color="normal")
-        c3.metric("❌ 剔除檔數", f"{len(exit_entry)}", delta_color="inverse")
+    # 卡片 2: 最大減碼
+    with col2:
+        st.metric(
+            label="🧊 本日最大減碼",
+            value=top_sell['股票名稱'],
+            delta=f"{int(top_sell['股數增減']):,}" if top_sell['股數增減'] < 0 else "無動作",
+            delta_color="inverse"
+        )
         
-        # 顯示最大加碼股
-        top_buy = merged_df.sort_values('股數增減', ascending=False).iloc[0] if not merged_df.empty else None
-        if top_buy is not None and top_buy['股數增減'] > 0:
-            c4.metric("🔥 最大加碼", f"{top_buy['股票名稱']}", f"+{int(top_buy['股數增減']):,}")
+    # 卡片 3: 新進榜
+    with col3:
+        st.metric(
+            label="✨ 新進檔數",
+            value=f"{len(new_entries)} 檔",
+            delta="點擊下方查看" if not new_entries.empty else "無"
+        )
+
+    # 卡片 4: 剔除榜
+    with col4:
+        st.metric(
+            label="❌ 剔除檔數",
+            value=f"{len(exits)} 檔",
+            delta="點擊下方查看" if not exits.empty else "無",
+            delta_color="inverse"
+        )
 
     st.divider()
 
-    # === 2. 🚨 置頂專區：新進與剔除 (最重要！) ===
-    if merged_df is not None:
-        col_new, col_exit = st.columns(2)
-        
-        with col_new:
-            st.subheader("✨ 今日新進榜 (New)")
-            if not new_entry.empty:
-                st.dataframe(new_entry[['股票代號', '股票名稱', '持有股數_今', '權重_今']].style.applymap(lambda x: 'background-color: #ffcccc', subset=['股票名稱']), use_container_width=True)
-            else:
-                st.info("今日無新進個股")
-                
-        with col_exit:
-            st.subheader("❌ 今日剔除榜 (Removed)")
-            if not exit_entry.empty:
-                st.dataframe(exit_entry[['股票代號', '股票名稱', '持有股數_昨']].style.applymap(lambda x: 'background-color: #ccffcc', subset=['股票名稱']), use_container_width=True)
-            else:
-                st.info("今日無剔除個股")
-
-    # === 3. 🔥 資金熱力圖 (Heatmap) ===
-    st.subheader("🗺️ 資金流向熱力圖 (板塊大小=權重, 顏色=加減碼)")
+    # --- 3. 資金熱力圖 (最直觀的視覺) ---
+    st.subheader("🗺️ 資金流向熱力圖")
+    st.caption("方塊越大=權重越重 | 顏色越紅=加碼越多 | 顏色越綠=減碼越多")
     
-    if merged_df is not None:
-        # 為了畫圖，我們過濾掉已剔除的 (權重為0無法顯示在板塊圖)，只看現在持有的
-        heatmap_data = merged_df[merged_df['權重_今'] > 0].copy()
-        
-        # 設定顏色：台灣股市習慣 (紅漲/買，綠跌/賣)
-        # 我們用 '股數增減' 來決定顏色深淺
-        # 為了讓顏色對比更明顯，我們建立一個 color column
-        
+    # 過濾掉權重為 0 的 (已剔除無法畫圖)
+    map_data = merged[merged['權重_今'] > 0].copy()
+    
+    if not map_data.empty:
         fig = px.treemap(
-            heatmap_data, 
-            path=['股票名稱'], 
+            map_data,
+            path=['股票名稱'],
             values='權重_今',
             color='股數增減',
-            color_continuous_scale=['#00aa00', '#ffffff', '#ff0000'], # 綠 -> 白 -> 紅
+            color_continuous_scale=['#00aa00', '#ffffff', '#ff0000'], # 綠-白-紅
             color_continuous_midpoint=0,
-            hover_data=['股票代號', '股數增減', '動作'],
-            title=f"{etf_name} 持股權重與資金流向"
+            hover_data=['股票代號', '股數增減', '權重_今']
         )
-        fig.update_traces(textinfo="label+value+percent entry") # 顯示名稱+權重
-        fig.update_layout(margin=dict(t=50, l=25, r=25, b=25))
+        fig.update_traces(textinfo="label+value+percent entry")
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("尚無足夠持股資料繪製熱力圖")
+
+    # --- 4. 分類詳細清單 ---
+    c1, c2 = st.columns(2)
     
-    else:
-        st.info("累積兩天資料後，將顯示資金熱力圖。")
+    with c1:
+        st.subheader("✨ 新進榜 (New)")
+        if not new_entries.empty:
+            st.dataframe(new_entries[['股票名稱', '權重_今', '持有股數_今']], use_container_width=True)
+        else:
+            st.info("無")
+            
+    with c2:
+        st.subheader("❌ 剔除榜 (Removed)")
+        if not exits.empty:
+            st.dataframe(exits[['股票名稱', '權重_昨', '持有股數_昨']], use_container_width=True)
+        else:
+            st.info("無")
 
-    # === 4. 📋 詳細異動表 (美化版) ===
-    st.subheader("📋 詳細持股異動表")
-    if merged_df is not None:
-        # 排序：加碼最多 -> 減碼最多
-        display_df = merged_df.sort_values(by='股數增減', ascending=False)
-        
-        # 選擇要顯示的欄位
-        display_df = display_df[['動作', '股票代號', '股票名稱', '持有股數_今', '股數增減', '權重_今', '權重增減']]
-        
-        # 針對「股數增減」欄位做顏色標記
-        def color_change(val):
-            color = '#ff4b4b' if val > 0 else '#00cc96' if val < 0 else 'transparent'
-            return f'color: {color}; font-weight: bold'
+    # --- 5. 完整持股異動表 ---
+    st.subheader("📋 完整持股異動明細")
+    
+    # 格式化顯示 (隱藏 Date, 加入顏色)
+    def highlight_change(val):
+        color = '#ffcccc' if val > 0 else '#ccffcc' if val < 0 else ''
+        return f'background-color: {color}'
 
-        st.dataframe(
-            display_df.style.map(color_change, subset=['股數增減', '權重增減'])
-                            .format({'持有股數_今': '{:,.0f}', '股數增減': '{:+,.0f}', '權重_今': '{:.2f}%', '權重增減': '{:+.2f}%'}),
-            use_container_width=True,
-            height=500
-        )
-    else:
-        st.dataframe(latest_df)
+    # 選擇顯示欄位
+    show_df = merged[['股票代號', '股票名稱', '持有股數_今', '股數增減', '權重_今', '權重增減']].copy()
+    show_df = show_df.sort_values(by='權重_今', ascending=False) # 預設依權重排序
 
-# --- 主程式區塊 ---
+    st.dataframe(
+        show_df.style.map(highlight_change, subset=['股數增減', '權重增減'])
+                     .format({'持有股數_今': '{:,.0f}', '股數增減': '{:+,.0f}', '權重_今': '{:.2f}', '權重增減': '{:+.2f}'}),
+        use_container_width=True,
+        height=600
+    )
+
+# --- 主程式：分頁 ---
 tab1, tab2, tab3 = st.tabs(["00981A 統一", "00991A 復華", "00980A 野村"])
 
 with tab1:
-    show_etf_dashboard("00981A", "統一台股增長主動式ETF")
-
+    show_dashboard("00981A", "統一台股增長主動式ETF")
 with tab2:
-    show_etf_dashboard("00991A", "復華未來50")
-
+    show_dashboard("00991A", "復華未來50")
 with tab3:
-    show_etf_dashboard("00980A", "野村臺灣智慧優選")
+    show_dashboard("00980A", "野村臺灣智慧優選")
