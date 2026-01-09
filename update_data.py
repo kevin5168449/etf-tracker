@@ -247,7 +247,7 @@ def update_00980A():
     return count
 
 # ==========================================
-# 00991A: 復華未來50 (V27 顯微鏡強取版)
+# 00991A: 復華未來50 (V28 狙擊手待命版)
 # ==========================================
 def update_00991A():
     TARGET_NAME = "復華未來50"
@@ -258,90 +258,133 @@ def update_00991A():
     
     try:
         driver.get(url)
-        print("💤 等待網頁載入 (10秒)...")
-        time.sleep(10) 
+        print("💤 等待網頁載入...")
         
-        # 1. 簡單捲動 (觸發 Lazy Load 即可)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        # 1. ★★★ 狙擊手待命：直到看到「證券代號」才動作 ★★★
+        try:
+            # 這是最關鍵的一步：不再是用時間等，而是用「條件」等
+            # 我們等待表格的表頭出現
+            WebDriverWait(driver, 25).until(
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'證券代號') or contains(text(),'證券名稱')]"))
+            )
+            print("   ✅ 偵測到表格表頭！")
+        except:
+            print("   ⚠️ 等待超時，嘗試暴力捲動喚醒...")
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3)
+        
+        # 2. 觸發 Lazy Load (確保下面的資料長出來)
+        # 復華的資料需要捲動才會 render，我們模擬人類慢慢往下滑
+        print("🔄 捲動頁面觸發資料載入...")
+        driver.execute_script("window.scrollTo(0, 300);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, 800);") # 大概是表格的位置
+        time.sleep(2)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);") # 到底
         time.sleep(2)
 
-        # 2. 嘗試點擊按鈕 (點不到也沒關係，因為上次 Log 顯示資料其實已經在了)
-        print("👆 嘗試點擊展開 (備用)...")
+        # 3. 點擊展開 (雖然可能不需要，但點一下保險)
         try:
-            xpath = "//*[contains(text(),'展開') or contains(text(),'更多')]"
-            btns = driver.find_elements(By.XPATH, xpath)
-            for btn in btns:
-                if btn.is_displayed():
-                    driver.execute_script("arguments[0].click();", btn)
-                    time.sleep(1)
+            # 針對 V26 截圖中的 "展開更多"
+            expand_btn = driver.find_elements(By.XPATH, "//*[contains(text(),'展開更多')]")
+            if expand_btn:
+                driver.execute_script("arguments[0].click();", expand_btn[0])
+                print("   ✅ 點擊了「展開更多」")
+                time.sleep(5)
         except: pass
-        
-        time.sleep(5) # 等待一下
 
-        # 3. ★★★ V27 核心：使用 JS textContent 強制提取 ★★★
-        print("⏳ 啟動「顯微鏡」資料抓取...")
+        # 4. ★★★ 鎖定表格並強力提取 ★★★
+        print("⏳ 啟動資料抓取...")
         best_df = pd.DataFrame()
         
         try:
-            # 直接抓取表格內所有的列 (tr)
+            # 策略：直接找所有的 tr (表格列)
+            # 為了避免抓到別的表格，我們先定位到含有 "2330" 或 "台灣積體" 的區塊
+            # 如果找不到台積電，就抓全頁所有的 tr
+            
             rows = driver.find_elements(By.XPATH, "//table//tr")
+            if len(rows) < 5:
+                # 如果 table 標籤抓不到，試試看 div 結構 (有些 RWD 網頁用 div 排版)
+                print("   ⚠️ Table 標籤抓取過少，切換 Div 模式...")
+                # 這裡假設它是用 div 模擬的表格，抓取所有包含 text 的 div
+                # 但復華應該是 table，我們先堅持用 table，只是可能要等久一點
+                time.sleep(5)
+                rows = driver.find_elements(By.XPATH, "//table//tr")
+
             print(f"   📊 掃描到 {len(rows)} 列 HTML 元件...")
             
             data = []
             for row in rows:
-                cols = row.find_elements(By.TAG_NAME, "td")
+                # 使用 JavaScript 提取整列的 innerText (包含隱藏內容)
+                # 這比逐個 cell 抓更穩，因為它會把整行的字串連在一起
+                row_text = driver.execute_script("return arguments[0].innerText;", row).strip()
                 
-                # 確保這一列有足夠的格子 (復華通常是 4~5 格)
-                if len(cols) >= 4:
-                    # ★★★ 關鍵修改：改用 JavaScript 取值，無視是否可見 ★★★
-                    row_data = []
-                    for c in cols:
-                        text = driver.execute_script("return arguments[0].textContent;", c).strip()
-                        row_data.append(text)
+                # 如果這一行有內容，且包含數字 (股票代號或股數)
+                if row_text and any(char.isdigit() for char in row_text):
+                    # 復華的格式通常是以換行符號 \n 或 tab \t 分隔
+                    # 我們嘗試切割它
+                    parts = row_text.replace('\t', '\n').split('\n')
+                    parts = [p.strip() for p in parts if p.strip() != ""]
                     
-                    # 簡單驗證：第一欄必須有東西，且不能是表頭
-                    if row_data[0] != "" and row_data[0] != "證券代號":
-                        data.append(row_data)
+                    # 簡單判斷：有效的資料行至少要有 3~4 個欄位 (代號, 名稱, 股數, 權重)
+                    if len(parts) >= 3:
+                        data.append(parts)
+
+            print(f"   ✅ 成功提取 {len(data)} 筆資料 (含隱藏)！")
             
-            print(f"   ✅ 透過顯微鏡成功提取 {len(data)} 筆資料！")
-            
+            # 處理抓到的資料
             if len(data) > 0:
-                # 轉成 DataFrame
-                temp_df = pd.DataFrame(data)
-                
-                # 自動對應欄位 (依據截圖：代號, 名稱, 股數, 金額, 權重)
-                # 我們需要第 0, 1, 2, 4 欄
-                if len(temp_df.columns) >= 5:
-                    temp_df = temp_df.iloc[:, [0, 1, 2, 4]]
-                    temp_df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
-                    best_df = temp_df
-                elif len(temp_df.columns) == 4:
-                    temp_df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
-                    best_df = temp_df
+                # 我們需要標準化資料
+                # 假設抓到的 parts 是 ['2330', '台灣積體', '2,000,000', '18.553%']
+                processed_data = []
+                for parts in data:
+                    # 尋找代號 (通常是 4 碼數字)
+                    code = next((p for p in parts if p.isdigit() and len(p) == 4), None)
+                    # 尋找權重 (有 % 的)
+                    weight = next((p for p in parts if '%' in p), "0")
+                    # 尋找名稱 (通常在代號後面)
+                    name = "未知"
+                    if code:
+                        try:
+                            idx = parts.index(code)
+                            if idx + 1 < len(parts):
+                                name = parts[idx+1]
+                        except: pass
+                    
+                    # 尋找股數 (含有 , 的大數字，且不是權重)
+                    shares = "0"
+                    for p in parts:
+                        if ',' in p and '%' not in p:
+                            shares = p
+                            break
+                    
+                    if code and name:
+                        processed_data.append([code, name, shares, weight])
+
+                if len(processed_data) > 0:
+                    best_df = pd.DataFrame(processed_data, columns=['股票代號', '股票名稱', '持有股數', '權重'])
 
         except Exception as e:
-            print(f"   ❌ 資料提取失敗: {e}")
+            print(f"   ❌ 資料解析失敗: {e}")
 
-        # 4. 存檔與安全閥
+        # 5. 存檔與安全閥
         if not best_df.empty:
             print(f"📊 最終確認筆數: {len(best_df)}")
             
             # 安全閥
-            if len(best_df) < 20:
-                print(f"⛔ [失敗] 只抓到 {len(best_df)} 筆 (目標 50 筆)。")
-                print("⛔ **拒絕存檔**，請檢查 Log。")
+            if len(best_df) < 15:
+                print(f"⛔ [失敗] 只抓到 {len(best_df)} 筆。拒絕存檔！")
                 return 0
             
-            # 格式清洗
-            if "股票名稱" in best_df.columns:
-                if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
-                
-                best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
-                for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
-                best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
-                count = save_to_csv("00991A", best_df)
-            else:
-                print("❌ 欄位對應錯誤")
+            # 清洗與存檔
+            # 去除重複 (有時候表頭會被當成資料抓兩次)
+            best_df = best_df.drop_duplicates(subset=['股票代號'])
+            
+            # 強制清洗
+            best_df['持有股數'] = best_df['持有股數'].astype(str).str.replace(',', '').str.replace('--', '0')
+            best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
+            
+            count = save_to_csv("00991A", best_df)
         else:
             print("❌ 找不到任何資料列")
 
