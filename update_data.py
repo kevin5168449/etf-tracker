@@ -247,7 +247,7 @@ def update_00980A():
     return count
 
 # ==========================================
-# 00991A: 復華未來50 (V23 代碼攻擊版)
+# 00991A: 復華未來50 (V24 展開更多狙擊版)
 # ==========================================
 def update_00991A():
     TARGET_NAME = "復華未來50"
@@ -265,97 +265,125 @@ def update_00991A():
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
         time.sleep(2)
         
-        # 2. 定位區塊 (避開 Header)
+        # 2. 定位到表格區塊
+        print("👆 定位持股區塊...")
         try:
-            target = driver.find_element(By.ID, "stockhold")
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
+            # 嘗試定位到截圖中的紅色表頭 "證券代號"
+            header = driver.find_element(By.XPATH, "//*[contains(text(),'證券代號')]")
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header)
             time.sleep(2)
-        except: pass
+        except: 
+            print("⚠️ 定位表頭失敗，嘗試捲動到底部")
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-        # 3. ★★★ 新策略：不找文字，找 CSS Class ★★★
-        print("👆 尋找展開按鈕 (依樣式代碼)...")
+        # 3. ★★★ 狙擊截圖中的「展開更多」按鈕 ★★★
+        print("👆 尋找「展開更多」按鈕...")
         try:
-            # 復華官網常見的按鈕 class 名稱
-            css_selectors = [
-                ".r-btn",          # 常見的紅色按鈕
-                ".more-btn",       # 通用更多按鈕
-                ".btn-more",       # 另一種寫法
-                "div[class*='btn']", # 任何包含 btn 的 div
-                "a[class*='btn']"    # 任何包含 btn 的連結
-            ]
+            # 精準 XPath：尋找文字包含 '展開更多' 的元素
+            # 針對截圖中的淺色長條按鈕
+            targets = driver.find_elements(By.XPATH, "//*[contains(text(),'展開更多')]")
             
             clicked = False
-            for css in css_selectors:
-                try:
-                    btns = driver.find_elements(By.CSS_SELECTOR, css)
-                    for btn in btns:
-                        # 只有當按鈕在持股區塊附近，且顯示出來時才點
-                        if btn.is_displayed():
-                            print(f"   🎯 嘗試點擊樣式: {css}")
-                            driver.execute_script("arguments[0].click();", btn)
-                            clicked = True
-                            time.sleep(0.5) # 連點也沒關係
-                except: pass
+            for btn in targets:
+                if btn.is_displayed():
+                    print(f"   🎯 鎖定目標: {btn.text}")
+                    # 畫紅框確認位置
+                    driver.execute_script("arguments[0].style.border='5px solid red'", btn)
+                    time.sleep(1)
+                    # 強制點擊
+                    driver.execute_script("arguments[0].click();", btn)
+                    print("   ✅ 點擊成功！等待資料展開 (10秒)...")
+                    clicked = True
+                    time.sleep(10)
+                    break
             
-            if clicked:
-                print("   ⏳ 點擊完成，等待展開 (10秒)...")
-                time.sleep(10)
-            else:
-                print("   ⚠️ 未找到符合樣式的按鈕，嘗試直接抓取...")
+            if not clicked:
+                print("   ⚠️ 未發現「展開更多」按鈕 (可能已展開或名稱不同)")
 
         except Exception as e:
             print(f"⚠️ 點擊錯誤: {e}")
 
-        # 4. 驗收資料
-        print("⏳ 讀取表格中...")
+        # 4. 讀取資料 (雙重保險)
+        print("⏳ 讀取表格資料...")
         best_df = pd.DataFrame()
-        
-        # 嘗試多次
-        for attempt in range(5):
-            try:
-                html = driver.page_source
-                dfs = pd.read_html(html)
-                for df in dfs:
-                    df.columns = [clean_column_name(c) for c in df.columns]
-                    cols = "".join(df.columns)
-                    if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
-                        if len(df) > len(best_df):
-                            best_df = df.copy()
-            except: pass
-            time.sleep(1)
 
-        # 5. 安全閥 (拒絕存檔 10 筆的資料)
+        # 方法 A: Pandas 直接讀取 (最快)
+        try:
+            html = driver.page_source
+            dfs = pd.read_html(html)
+            for df in dfs:
+                df.columns = [clean_column_name(c) for c in df.columns]
+                cols = "".join(df.columns)
+                # 復華欄位：證券代號、證券名稱、股數、權重
+                if ("代號" in cols) and ("名稱" in cols) and ("權重" in cols):
+                    if len(df) > len(best_df):
+                        best_df = df.copy()
+        except: pass
+
+        # 方法 B: Selenium 硬抓 (如果方法 A 失敗)
+        if best_df.empty or len(best_df) < 15:
+            print("⚠️ Pandas 讀取失敗或資料不全，啟動「Selenium 硬抓模式」...")
+            try:
+                # 直接抓取表格的每一列 tr
+                rows = driver.find_elements(By.XPATH, "//table//tr")
+                data = []
+                for row in rows:
+                    cols = row.find_elements(By.TAG_NAME, "td")
+                    if len(cols) >= 4: # 至少要有代號、名稱、股數、權重
+                        # 依序取出文字
+                        row_data = [c.text.strip() for c in cols]
+                        data.append(row_data)
+                
+                if len(data) > 0:
+                    # 假設欄位順序：代號, 名稱, 股數, 金額, 權重 (依據截圖)
+                    # 這裡先做個簡單的 DataFrame
+                    temp_df = pd.DataFrame(data)
+                    # 簡單判斷哪一欄是甚麼 (通常第0欄是代號, 第1欄是名稱, 最後是權重)
+                    # 這裡做個防呆：找出包含數字的作為代號
+                    print(f"   📊 硬抓模式成功！抓到 {len(data)} 列")
+                    
+                    # 手動指派欄位 (根據截圖 image_0c7ec2.png 的順序)
+                    # 截圖順序: 證券代號 | 證券名稱 | 股數 | 金額 | 權重
+                    if len(temp_df.columns) >= 5:
+                        temp_df = temp_df.iloc[:, [0, 1, 2, 4]] # 取第 0,1,2,4 欄
+                        temp_df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
+                        best_df = temp_df
+            except Exception as e:
+                print(f"   ❌ 硬抓模式也失敗: {e}")
+
+        # 5. 安全閥與存檔
         if not best_df.empty:
-            print(f"📊 目前抓到 {len(best_df)} 筆資料")
+            print(f"📊 最終確認抓到 {len(best_df)} 筆資料")
             
             if len(best_df) < 15:
-                print(f"⛔ [失敗] 仍然只抓到 {len(best_df)} 筆。")
-                print("⛔ 認定為展開失敗，**拒絕存檔** (保護資料庫)！")
+                print(f"⛔ [失敗] 仍然只抓到 {len(best_df)} 筆。拒絕存檔！")
                 return 0
-                
+            
+            # 欄位正規化
+            # 如果是方法A抓的，欄位名稱可能需要對應
             rename_map = {}
             for c in best_df.columns:
                 if "代號" in c: rename_map[c] = "股票代號"
                 elif "名稱" in c: rename_map[c] = "股票名稱"
-                elif "股數" in c or "庫存" in c: rename_map[c] = "持有股數"
-                elif "權重" in c or "比例" in c: rename_map[c] = "權重"
-            
+                elif "股數" in c: rename_map[c] = "持有股數"
+                elif "權重" in c: rename_map[c] = "權重"
             best_df = best_df.rename(columns=rename_map)
-            
-            if "股票名稱" in best_df.columns:
+
+            # 確保欄位存在
+            if "股票名稱" in best_df.columns and "權重" in best_df.columns:
                 if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
                 if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
                 
                 best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
-                # 全面清洗
+                # 清洗
                 for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
-                
                 best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
+                
                 count = save_to_csv("00991A", best_df)
             else:
-                print("❌ [00991A] 欄位不符")
+                print("❌ [00991A] 欄位對應失敗")
         else:
-            print("❌ [00991A] 找不到表格")
+            print("❌ [00991A] 找不到表格 (兩種方法都失敗)")
 
     except Exception as e:
         print(f"❌ [00991A] 錯誤: {e}")
