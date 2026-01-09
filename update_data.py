@@ -247,39 +247,88 @@ def update_00980A():
     return count
 
 # ==========================================
-# 00991A: 復華未來50
+# 00991A: 復華未來50 (V17 強力移植版)
 # ==========================================
 def update_00991A():
     TARGET_NAME = "復華未來50"
     print(f"\n🚀 [00991A] 啟動爬蟲：復華投信 ({TARGET_NAME})...")
-    url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23#stockhold" 
+    url = "https://www.fhtrust.com.tw/ETF/etf_detail/ETF23" # 拿掉 #stockhold 讓網頁從頭載入
     driver = get_driver()
     count = 0
+    
     try:
         driver.get(url)
-        time.sleep(5)
+        time.sleep(8) # 復華載入較慢，多等一下
+        
+        # 1. 暴力捲動：上下來回捲動，強制觸發 Lazy Load
+        print("🔄 正在捲動頁面喚醒元素...")
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        
+        # 2. 定位到持股區塊
+        print("👆 定位持股區塊...")
         try:
-            target_div = driver.find_element(By.ID, "stockhold")
-            driver.execute_script("arguments[0].scrollIntoView(true);", target_div)
+            # 嘗試找 id="stockhold" 或 包含文字的區塊
+            target = driver.find_element(By.ID, "stockhold")
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
             time.sleep(2)
-        except: pass
+        except:
+            print("⚠️ 找不到 ID stockhold，改用文字搜尋...")
+            try:
+                xpath = "//*[contains(text(),'持股權重') or contains(text(),'基金持股')]"
+                target = driver.find_element(By.XPATH, xpath)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
+            except: pass
 
-        print("👆 尋找「更多」按鈕...")
+        # 3. 強力尋找「更多」按鈕 (移植野村的邏輯)
+        print("👆 尋找「更多/展開」按鈕...")
         try:
-            xpath = "//*[contains(text(),'更多') or contains(text(),'展開') or contains(text(),'查閱全部')]"
-            buttons = driver.find_elements(By.XPATH, xpath)
-            for btn in buttons:
-                if btn.is_displayed():
-                    driver.execute_script("arguments[0].click();", btn)
-                    time.sleep(1)
-                    try: ActionChains(driver).move_to_element(btn).click().perform()
-                    except: pass
-                    break
-        except: pass
+            # 復華的按鈕通常有特定的 class，我們擴大搜尋範圍
+            css_selectors = [
+                ".r-btn", ".more-btn", ".btn-more", # 常見 class
+                "a[href*='javascript']", 
+                "div[onclick]", # 復華有時候用 div 當按鈕
+                "span"
+            ]
+            keywords = ["更多", "展開", "查閱全部", "More", "顯示全部"]
+            
+            potential_btns = []
+            for css in css_selectors:
+                potential_btns.extend(driver.find_elements(By.CSS_SELECTOR, css))
+                
+            # 另外用 XPath 補強
+            potential_btns.extend(driver.find_elements(By.XPATH, "//*[contains(text(),'更多') or contains(text(),'展開')]"))
 
+            clicked = False
+            for btn in potential_btns:
+                if btn.is_displayed():
+                    txt = btn.text.strip()
+                    # 檢查文字是否符合
+                    if any(k in txt for k in keywords):
+                        print(f"   🎯 鎖定按鈕：'{txt}'")
+                        # 畫紅框標記 (Debug用)
+                        driver.execute_script("arguments[0].style.border='3px solid red'", btn)
+                        time.sleep(1)
+                        
+                        # JS 強制點擊 (無視遮擋)
+                        driver.execute_script("arguments[0].click();", btn)
+                        print("   ✅ 點擊成功")
+                        clicked = True
+                        time.sleep(3)
+                        break
+            
+            if not clicked:
+                print("⚠️ 未找到明顯的展開按鈕，將嘗試直接抓取 (可能已是完整清單)")
+
+        except Exception as e:
+            print(f"⚠️ 按鈕搜尋錯誤: {e}")
+
+        # 4. 貪婪抓取 (等待資料展開)
         print("⏳ 等待資料載入...")
         best_df = pd.DataFrame()
-        for _ in range(10):
+        for attempt in range(15):
             try:
                 html = driver.page_source
                 dfs = pd.read_html(html)
@@ -292,6 +341,8 @@ def update_00991A():
                         if len(df) > max_rows:
                             max_rows = len(df)
                             current_best = df.copy()
+                
+                print(f"   檢查中 (第 {attempt+1} 次)... 最大表格有 {max_rows} 筆")
                 if max_rows > 15:
                     best_df = current_best
                     print(f"🌟 抓到完整清單：{max_rows} 筆")
@@ -305,21 +356,27 @@ def update_00991A():
             for c in best_df.columns:
                 if "代號" in c: rename_map[c] = "股票代號"
                 elif "名稱" in c: rename_map[c] = "股票名稱"
-                elif "股數" in c: rename_map[c] = "持有股數"
+                elif "股數" in c or "庫存" in c: rename_map[c] = "持有股數"
                 elif "權重" in c or "比例" in c: rename_map[c] = "權重"
+            
             best_df = best_df.rename(columns=rename_map)
+            
             if "股票名稱" in best_df.columns:
                 if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
                 if "持有股數" not in best_df.columns: best_df["持有股數"] = 0
+                
                 best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
+                # 全面清洗
                 for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
+                
                 best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
                 count = save_to_csv("00991A", best_df)
+            else: print("❌ [00991A] 表格欄位不符")
         else: print("❌ [00991A] 找不到表格")
+
     except Exception as e: print(f"❌ [00991A] 錯誤: {e}")
     finally: driver.quit()
     return count
-
 # ==========================================
 # Discord 推播
 # ==========================================
