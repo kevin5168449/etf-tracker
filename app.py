@@ -10,21 +10,16 @@ st.set_page_config(page_title="ETF 經理人操盤戰情室", layout="wide", pag
 st.markdown("""
 <style>
     /* Metric 數字放大 */
-    div[data-testid="stMetricValue"] { font-size: 24px; }
+    div[data-testid="stMetricValue"] { font-size: 26px; font-weight: bold; }
     
-    /* 表格緊湊化 */
+    /* 表格字體優化 */
+    div[data-testid="stDataFrame"] { font-size: 16px; }
+    
+    /* 調整表格行高，讓它看起來不要那麼擠，也不要那麼散 */
     div[data-testid="stDataFrame"] td {
-        padding-top: 4px !important;
-        padding-bottom: 4px !important;
-        font-size: 14px;
+        padding-top: 8px !important;
+        padding-bottom: 8px !important;
     }
-    div[data-testid="stDataFrame"] th {
-        padding-top: 4px !important;
-        padding-bottom: 4px !important;
-    }
-
-    /* 強制表格內容靠右 (符合財務閱讀習慣) */
-    .dataframe { text-align: right !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -63,7 +58,17 @@ def get_comparison(df, current_date, base_date):
     merged['股數增減'] = merged['持有股數_今'] - merged['持有股數_昨']
     merged['權重增減'] = merged['權重_今'] - merged['權重_昨']
     
-    # 補回名稱 (針對已剔除的股票)
+    # 定義「狀態」標籤 (新增欄位)
+    def determine_status(row):
+        if row['持有股數_昨'] == 0 and row['持有股數_今'] > 0: return '✨ 新進'
+        if row['持有股數_昨'] > 0 and row['持有股數_今'] == 0: return '❌ 剔除'
+        if row['股數增減'] > 0: return '🔴 加碼'
+        if row['股數增減'] < 0: return '🟢 減碼'
+        return '⚪ 持平'
+
+    merged['狀態'] = merged.apply(determine_status, axis=1)
+
+    # 補回名稱
     for idx, row in merged.iterrows():
         if row['股票名稱'] == 0:
             old_name = df_base[df_base['股票代號'] == row['股票代號']]['股票名稱'].values
@@ -71,21 +76,23 @@ def get_comparison(df, current_date, base_date):
             
     return merged
 
-# --- ★★★ 核心顯示介面 (共用函式) ★★★ ---
+# --- ★★★ 核心顯示介面 ★★★ ---
 def show_dashboard(etf_code, etf_name):
     df = load_data(etf_code)
     if df is None:
-        st.error(f"⚠️ {etf_code} 尚未有資料，請確認 GitHub Actions 是否執行成功。")
+        st.error(f"⚠️ {etf_code} 尚未有資料。")
         return
 
-    # --- 1. 側邊欄：日期選擇 ---
+    # --- 1. 側邊欄：日期選擇 (自動防呆) ---
     all_dates = df['Date'].dt.date.unique()
     if len(all_dates) < 1:
-        st.warning("資料不足，無法顯示。")
+        st.warning("資料不足。")
         return
 
     st.sidebar.header(f"📅 {etf_name} 設定")
     date_curr = st.sidebar.selectbox(f"{etf_code} 觀察日期", all_dates, index=0)
+    
+    # 自動選擇前一天作為比較基準 (如果有的話)
     default_base_idx = 1 if len(all_dates) > 1 else 0
     date_base = st.sidebar.selectbox(f"{etf_code} 比較基準", all_dates, index=default_base_idx)
     st.sidebar.markdown("---")
@@ -93,61 +100,37 @@ def show_dashboard(etf_code, etf_name):
     merged = get_comparison(df, pd.Timestamp(date_curr), pd.Timestamp(date_base))
     
     # 分類篩選
-    new_entries = merged[(merged['持有股數_昨'] == 0) & (merged['持有股數_今'] > 0)]
-    exits = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] == 0)]
-    
-    holding_changes = merged[(merged['持有股數_昨'] > 0) & (merged['持有股數_今'] > 0)].copy()
-    increases = holding_changes[holding_changes['股數增減'] > 0].sort_values('股數增減', ascending=False)
-    decreases = holding_changes[holding_changes['股數增減'] < 0].sort_values('股數增減', ascending=True)
+    new_entries = merged[merged['狀態'] == '✨ 新進']
+    exits = merged[merged['狀態'] == '❌ 剔除']
+    increases = merged[merged['狀態'] == '🔴 加碼'].sort_values('股數增減', ascending=False)
+    decreases = merged[merged['狀態'] == '🟢 減碼'].sort_values('股數增減', ascending=True)
 
-    # --- 2. 四大天王榜單 (買方 vs 賣方) ---
+    # --- 2. 四大天王榜單 ---
     st.markdown(f"### 🗓️ {date_curr} vs {date_base} 操盤重點")
     
     c1, c2 = st.columns(2)
     
-    # 左側：多方
     with c1:
-        st.info("🔴 **多方操作 (新進 + 加碼)**")
+        st.info("🔴 **多方操作 (Buy)**")
         sub_c1, sub_c2 = st.columns(2)
-        with sub_c1: st.metric("✨ 新進檔數", f"{len(new_entries)}", delta_color="normal")
-        with sub_c2: st.metric("🔺 加碼檔數", f"{len(increases)}", delta_color="normal")
+        with sub_c1: st.metric("✨ 新進檔數", f"{len(new_entries)}")
+        with sub_c2: st.metric("🔺 加碼檔數", f"{len(increases)}")
         
         if not new_entries.empty:
-            st.markdown("##### ✨ 新進榜")
-            st.dataframe(
-                new_entries[['股票名稱', '權重_今', '持有股數_今']].style.format({'權重_今': '{:.2f}%', '持有股數_今': '{:,.0f}'}).set_properties(**{'text-align': 'right'}),
-                hide_index=True, use_container_width=True
-            )
-        
+            st.dataframe(new_entries[['股票名稱', '權重_今', '持有股數_今']].style.format({'權重_今': '{:.2f}%', '持有股數_今': '{:,.0f}'}), hide_index=True, use_container_width=True)
         if not increases.empty:
-            st.markdown("##### 🔺 重點加碼 (Top 5)")
-            top_inc = increases.head(5)[['股票名稱', '股數增減', '權重_今']]
-            st.dataframe(
-                top_inc.style.format({'股數增減': '+{:,.0f}', '權重_今': '{:.2f}%'}).set_properties(**{'text-align': 'right'}),
-                hide_index=True, use_container_width=True
-            )
+            st.dataframe(increases.head(5)[['股票名稱', '股數增減', '權重_今']].style.format({'股數增減': '+{:,.0f}', '權重_今': '{:.2f}%'}), hide_index=True, use_container_width=True)
 
-    # 右側：空方
     with c2:
-        st.success("🟢 **空方操作 (剔除 + 減碼)**")
+        st.success("🟢 **空方操作 (Sell)**")
         sub_c3, sub_c4 = st.columns(2)
-        with sub_c3: st.metric("❌ 剔除檔數", f"{len(exits)}", delta_color="inverse")
-        with sub_c4: st.metric("🔻 減碼檔數", f"{len(decreases)}", delta_color="inverse")
+        with sub_c3: st.metric("❌ 剔除檔數", f"{len(exits)}")
+        with sub_c4: st.metric("🔻 減碼檔數", f"{len(decreases)}")
             
         if not exits.empty:
-            st.markdown("##### ❌ 剔除榜")
-            st.dataframe(
-                exits[['股票名稱', '權重_昨', '持有股數_昨']].style.format({'權重_昨': '{:.2f}%', '持有股數_昨': '{:,.0f}'}).set_properties(**{'text-align': 'right'}),
-                hide_index=True, use_container_width=True
-            )
-            
+            st.dataframe(exits[['股票名稱', '權重_昨', '持有股數_昨']].style.format({'權重_昨': '{:.2f}%', '持有股數_昨': '{:,.0f}'}), hide_index=True, use_container_width=True)
         if not decreases.empty:
-            st.markdown("##### 🔻 重點減碼 (Top 5)")
-            top_dec = decreases.head(5)[['股票名稱', '股數增減', '權重_今']]
-            st.dataframe(
-                top_dec.style.format({'股數增減': '{:,.0f}', '權重_今': '{:.2f}%'}).set_properties(**{'text-align': 'right'}),
-                hide_index=True, use_container_width=True
-            )
+            st.dataframe(decreases.head(5)[['股票名稱', '股數增減', '權重_今']].style.format({'股數增減': '{:,.0f}', '權重_今': '{:.2f}%'}), hide_index=True, use_container_width=True)
 
     st.divider()
 
@@ -169,45 +152,61 @@ def show_dashboard(etf_code, etf_name):
     else:
         st.info("尚無資料")
 
-    # --- 4. 完整持股異動表 (所有分頁統一格式) ---
+    # --- 4. 完整持股異動表 (V19 視覺優化版) ---
     st.subheader("📋 完整持股異動明細 (依權重排序)")
     
-    show_df = merged[['股票代號', '股票名稱', '持有股數_今', '股數增減', '權重_今', '權重增減']].copy()
-    show_df.columns = ['代號', '名稱', '目前持股 (股)', '持股增減 (股)', '權重 (%)', '權重變化 (%)']
+    # 整理表格欄位
+    show_df = merged[['狀態', '股票代號', '股票名稱', '權重_今', '權重增減', '持有股數_今', '股數增減']].copy()
     
-    # 統一依權重排序
-    show_df = show_df.sort_values(by='權重 (%)', ascending=False)
+    # 依權重排序
+    show_df = show_df.sort_values(by='權重_今', ascending=False)
 
-    # 樣式設定
-    def highlight_change(val):
-        color = '#ffcccc' if val > 0 else '#ccffcc' if val < 0 else ''
-        return f'background-color: {color}'
-
+    # ★★★ Streamlit Column Config 強大功能 ★★★
     st.dataframe(
-        show_df.style.map(highlight_change, subset=['持股增減 (股)', '權重變化 (%)'])
-                     .format({
-                         '目前持股 (股)': '{:,.0f}', 
-                         '持股增減 (股)': '{:+,.0f}', 
-                         '權重 (%)': '{:.2f}', 
-                         '權重變化 (%)': '{:+.2f}'
-                     })
-                     .set_properties(**{'text-align': 'right'}), # 強制靠右
+        show_df,
         use_container_width=True,
-        hide_index=True, # 隱藏索引 (前面的怪數字)
-        height=800
+        hide_index=True,
+        height=800,
+        column_config={
+            "狀態": st.column_config.TextColumn(
+                "操盤動作",
+                help="經理人的買賣動作",
+                validate="^(✨ 新進|❌ 剔除|🔴 加碼|🟢 減碼|⚪ 持平)$",
+                width="small"
+            ),
+            "股票代號": st.column_config.TextColumn("代號", width="small"),
+            "股票名稱": st.column_config.TextColumn("名稱", width="medium"),
+            "權重_今": st.column_config.ProgressColumn(
+                "權重 (%)",
+                help="目前持股權重",
+                format="%.2f%%",
+                min_value=0,
+                max_value=max(show_df['權重_今'].max(), 10), # 動態設定最大值
+            ),
+            "權重增減": st.column_config.NumberColumn(
+                "權重變化",
+                format="%.2f%%",
+            ),
+            "持有股數_今": st.column_config.NumberColumn(
+                "目前持股 (股)",
+                format="%d",
+            ),
+            "股數增減": st.column_config.NumberColumn(
+                "持股增減 (股)",
+                help="與比較基準日的股數差異",
+                format="%+d", # 自動加正負號
+            ),
+        }
     )
 
-# --- ★★★ 主程式區塊：請確保這裡都改了！ ★★★ ---
+# --- ★★★ 主程式區塊：三台同步！ ★★★ ---
 tab1, tab2, tab3 = st.tabs(["00981A 統一", "00991A 復華", "00980A 野村"])
 
 with tab1:
-    # 呼叫共用函式，套用新介面
     show_dashboard("00981A", "統一台股增長主動式ETF")
 
 with tab2:
-    # 呼叫共用函式，套用新介面
     show_dashboard("00991A", "復華未來50")
 
 with tab3:
-    # 呼叫共用函式，套用新介面
     show_dashboard("00980A", "野村臺灣智慧優選")
