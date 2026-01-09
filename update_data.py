@@ -247,7 +247,7 @@ def update_00980A():
     return count
 
 # ==========================================
-# 00991A: 復華未來50 (V26 視覺錨點鎖定版)
+# 00991A: 復華未來50 (V27 顯微鏡強取版)
 # ==========================================
 def update_00991A():
     TARGET_NAME = "復華未來50"
@@ -261,81 +261,56 @@ def update_00991A():
         print("💤 等待網頁載入 (10秒)...")
         time.sleep(10) 
         
-        # 1. ★★★ 視覺錨點鎖定 ★★★
-        # 不再盲目捲動，直接尋找表格的「表頭」
-        print("👆 正在搜尋表格錨點 '證券名稱'...")
-        found_anchor = False
-        try:
-            # 嘗試定位表頭
-            anchor = driver.find_element(By.XPATH, "//*[contains(text(),'證券名稱')]")
-            # 捲動到該元素的位置 (置中)
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", anchor)
-            print("   ✅ 成功鎖定表格位置！")
-            found_anchor = True
-            time.sleep(3)
-        except:
-            print("   ⚠️ 找不到表頭，嘗試捲動到頁面中間碰運氣...")
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-            time.sleep(3)
+        # 1. 簡單捲動 (觸發 Lazy Load 即可)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        time.sleep(2)
 
-        # 2. ★★★ 尋找「展開更多」按鈕 ★★★
-        print("👆 尋找「展開更多」按鈕...")
+        # 2. 嘗試點擊按鈕 (點不到也沒關係，因為上次 Log 顯示資料其實已經在了)
+        print("👆 嘗試點擊展開 (備用)...")
         try:
-            # 針對截圖中的文字 "展開更多"
-            xpath = "//*[contains(text(),'展開更多')]"
+            xpath = "//*[contains(text(),'展開') or contains(text(),'更多')]"
             btns = driver.find_elements(By.XPATH, xpath)
-            
-            clicked = False
             for btn in btns:
                 if btn.is_displayed():
-                    print(f"   🎯 發現目標: [{btn.text}]")
-                    driver.execute_script("arguments[0].style.border='5px solid red'", btn) # 標記紅框
-                    driver.execute_script("arguments[0].click();", btn) # 強制點擊
-                    print("   ✅ 點擊成功！等待資料展開 (15秒)...")
-                    clicked = True
-                    time.sleep(15) # 給它充足時間展開
-                    break
-            
-            if not clicked:
-                print("   ⚠️ 未發現「展開更多」，嘗試尋找包含「更多」的按鈕...")
-                #備用：找任何包含 "更多" 的 div
-                backup_btns = driver.find_elements(By.XPATH, "//div[contains(text(),'更多')]")
-                for btn in backup_btns:
-                    if btn.is_displayed():
-                        driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(10)
-                        break
+                    driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(1)
+        except: pass
+        
+        time.sleep(5) # 等待一下
 
-        except Exception as e:
-            print(f"⚠️ 點擊過程錯誤: {e}")
-
-        # 3. 讀取資料 (優先使用 Selenium 硬抓，因為最穩)
-        print("⏳ 啟動資料抓取...")
+        # 3. ★★★ V27 核心：使用 JS textContent 強制提取 ★★★
+        print("⏳ 啟動「顯微鏡」資料抓取...")
         best_df = pd.DataFrame()
         
-        # 直接抓取表格列 (Tr)
         try:
-            # 抓取表格內所有的列
+            # 直接抓取表格內所有的列 (tr)
             rows = driver.find_elements(By.XPATH, "//table//tr")
-            print(f"   📊 掃描到 {len(rows)} 列資料...")
+            print(f"   📊 掃描到 {len(rows)} 列 HTML 元件...")
             
             data = []
             for row in rows:
                 cols = row.find_elements(By.TAG_NAME, "td")
+                
                 # 確保這一列有足夠的格子 (復華通常是 4~5 格)
                 if len(cols) >= 4:
-                    row_data = [c.text.strip() for c in cols]
-                    # 簡單過濾掉空行
-                    if row_data[0] != "":
+                    # ★★★ 關鍵修改：改用 JavaScript 取值，無視是否可見 ★★★
+                    row_data = []
+                    for c in cols:
+                        text = driver.execute_script("return arguments[0].textContent;", c).strip()
+                        row_data.append(text)
+                    
+                    # 簡單驗證：第一欄必須有東西，且不能是表頭
+                    if row_data[0] != "" and row_data[0] != "證券代號":
                         data.append(row_data)
             
+            print(f"   ✅ 透過顯微鏡成功提取 {len(data)} 筆資料！")
+            
             if len(data) > 0:
-                print(f"   ✅ 成功提取 {len(data)} 筆資料")
                 # 轉成 DataFrame
                 temp_df = pd.DataFrame(data)
                 
-                # 自動判斷欄位 (依據截圖：代號, 名稱, 股數, 金額, 權重)
-                # 取第 0, 1, 2, 4 欄 (跳過金額)
+                # 自動對應欄位 (依據截圖：代號, 名稱, 股數, 金額, 權重)
+                # 我們需要第 0, 1, 2, 4 欄
                 if len(temp_df.columns) >= 5:
                     temp_df = temp_df.iloc[:, [0, 1, 2, 4]]
                     temp_df.columns = ['股票代號', '股票名稱', '持有股數', '權重']
@@ -345,21 +320,20 @@ def update_00991A():
                     best_df = temp_df
 
         except Exception as e:
-            print(f"   ❌ 硬抓模式失敗: {e}")
+            print(f"   ❌ 資料提取失敗: {e}")
 
         # 4. 存檔與安全閥
         if not best_df.empty:
             print(f"📊 最終確認筆數: {len(best_df)}")
             
-            # ★★★ 安全閥：少於 20 筆視為失敗 ★★★
+            # 安全閥
             if len(best_df) < 20:
                 print(f"⛔ [失敗] 只抓到 {len(best_df)} 筆 (目標 50 筆)。")
-                print("⛔ **拒絕存檔**，請檢查 Log 確認是否展開失敗。")
+                print("⛔ **拒絕存檔**，請檢查 Log。")
                 return 0
             
             # 格式清洗
             if "股票名稱" in best_df.columns:
-                # 確保代號存在
                 if "股票代號" not in best_df.columns: best_df["股票代號"] = best_df["股票名稱"]
                 
                 best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
