@@ -247,7 +247,7 @@ def update_00980A():
     return count
 
 # ==========================================
-# 00991A: 復華未來50 (V22 地毯式轟炸點擊版)
+# 00991A: 復華未來50 (V23 代碼攻擊版)
 # ==========================================
 def update_00991A():
     TARGET_NAME = "復華未來50"
@@ -258,66 +258,60 @@ def update_00991A():
     
     try:
         driver.get(url)
-        print("💤 等待網頁載入 (10秒)...")
-        time.sleep(10)
+        print("💤 等待網頁載入 (15秒)...")
+        time.sleep(15) 
         
-        # 1. 喚醒頁面 (上下捲動)
+        # 1. 喚醒頁面
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-        time.sleep(1)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1)
+        time.sleep(2)
         
-        # 2. 定位到持股區塊 (將區塊捲動到螢幕正中央，避免被遮擋)
-        print("👆 定位持股區塊...")
+        # 2. 定位區塊 (避開 Header)
         try:
-            xpath_block = "//*[contains(text(),'持股權重') or contains(text(),'基金持股') or @id='stockhold']"
-            target = driver.find_element(By.XPATH, xpath_block)
+            target = driver.find_element(By.ID, "stockhold")
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
             time.sleep(2)
         except: pass
 
-        # 3. ★★★ 地毯式轟炸點擊 ★★★
-        print("👆 啟動「地毯式」搜尋按鈕...")
+        # 3. ★★★ 新策略：不找文字，找 CSS Class ★★★
+        print("👆 尋找展開按鈕 (依樣式代碼)...")
         try:
-            # 關鍵字清單 (包含所有可能的寫法)
-            keywords = ["查閱全部", "顯示全部", "全部持股", "展開", "更多", "More", "All"]
+            # 復華官網常見的按鈕 class 名稱
+            css_selectors = [
+                ".r-btn",          # 常見的紅色按鈕
+                ".more-btn",       # 通用更多按鈕
+                ".btn-more",       # 另一種寫法
+                "div[class*='btn']", # 任何包含 btn 的 div
+                "a[class*='btn']"    # 任何包含 btn 的連結
+            ]
             
-            # 找出頁面上所有的 a, button, div, span 標籤
-            elements = driver.find_elements(By.XPATH, "//a | //button | //div | //span")
-            
-            clicked_count = 0
-            for el in elements:
+            clicked = False
+            for css in css_selectors:
                 try:
-                    # 只有當元素可見，且文字包含關鍵字時
-                    if el.is_displayed() and el.text.strip() != "":
-                        txt = el.text.strip()
-                        if any(k in txt for k in keywords):
-                            print(f"   🎯 發現可疑按鈕: [{txt}] -> 嘗試點擊！")
-                            
-                            # 畫紅框標記 (方便除錯)
-                            driver.execute_script("arguments[0].style.border='5px solid red'", el)
-                            
-                            # JavaScript 強制點擊
-                            driver.execute_script("arguments[0].click();", el)
-                            clicked_count += 1
-                            time.sleep(0.5) # 稍微間隔一下
-                except: continue
+                    btns = driver.find_elements(By.CSS_SELECTOR, css)
+                    for btn in btns:
+                        # 只有當按鈕在持股區塊附近，且顯示出來時才點
+                        if btn.is_displayed():
+                            print(f"   🎯 嘗試點擊樣式: {css}")
+                            driver.execute_script("arguments[0].click();", btn)
+                            clicked = True
+                            time.sleep(0.5) # 連點也沒關係
+                except: pass
             
-            if clicked_count > 0:
-                print(f"   ✅ 共嘗試點擊了 {clicked_count} 個按鈕，等待資料展開 (10秒)...")
+            if clicked:
+                print("   ⏳ 點擊完成，等待展開 (10秒)...")
                 time.sleep(10)
             else:
-                print("   ⚠️ 掃描全頁未發現任何「展開」類型的按鈕 (可能已自動展開)")
+                print("   ⚠️ 未找到符合樣式的按鈕，嘗試直接抓取...")
 
         except Exception as e:
-            print(f"⚠️ 點擊過程錯誤: {e}")
+            print(f"⚠️ 點擊錯誤: {e}")
 
         # 4. 驗收資料
-        print("⏳ 正在讀取表格資料...")
+        print("⏳ 讀取表格中...")
         best_df = pd.DataFrame()
         
-        # 嘗試讀取多次
-        for _ in range(5):
+        # 嘗試多次
+        for attempt in range(5):
             try:
                 html = driver.page_source
                 dfs = pd.read_html(html)
@@ -325,20 +319,18 @@ def update_00991A():
                     df.columns = [clean_column_name(c) for c in df.columns]
                     cols = "".join(df.columns)
                     if ("名稱" in cols or "代號" in cols) and ("權重" in cols or "比例" in cols):
-                        # 我們要找最大的那個表格
                         if len(df) > len(best_df):
                             best_df = df.copy()
             except: pass
             time.sleep(1)
 
-        # 5. 安全閥檢查
+        # 5. 安全閥 (拒絕存檔 10 筆的資料)
         if not best_df.empty:
             print(f"📊 目前抓到 {len(best_df)} 筆資料")
             
-            # 如果還是只有 10 筆，絕對是失敗了
             if len(best_df) < 15:
-                print(f"⛔ [失敗] 仍然只抓到 {len(best_df)} 筆 (少於 15 筆)。")
-                print("⛔ 為了保護資料庫，本次 **拒絕存檔**！請檢查網頁結構。")
+                print(f"⛔ [失敗] 仍然只抓到 {len(best_df)} 筆。")
+                print("⛔ 認定為展開失敗，**拒絕存檔** (保護資料庫)！")
                 return 0
                 
             rename_map = {}
@@ -357,8 +349,8 @@ def update_00991A():
                 best_df = best_df[['股票代號', '股票名稱', '持有股數', '權重']]
                 # 全面清洗
                 for col in best_df.columns: best_df[col] = best_df[col].apply(clean_cell_data)
-                best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
                 
+                best_df['權重'] = best_df['權重'].astype(str).str.replace('%', '')
                 count = save_to_csv("00991A", best_df)
             else:
                 print("❌ [00991A] 欄位不符")
