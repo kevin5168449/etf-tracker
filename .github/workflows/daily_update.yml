@@ -2,9 +2,8 @@ name: Daily ETF Data Update
 
 on:
   schedule:
-    # 每天台灣時間下午 17:00 (UTC 09:00)
-    - cron: '0 9 * * *'
-  # 允許手動按鈕觸發
+    # UTC 10:30 = 台灣時間 18:30
+    - cron: '30 10 * * *'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +28,8 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run Crawler
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
       run: python update_data.py
 
     - name: Commit and Push changes
@@ -36,6 +37,5 @@ jobs:
         git config --global user.name "GitHub Action Bot"
         git config --global user.email "action@github.com"
         git add data/*.csv
-        # 如果有變動才 Commit，沒變動就不做，避免報錯
         git commit -m "Auto-update ETF data $(date +'%Y-%m-%d')" || exit 0
         git push
